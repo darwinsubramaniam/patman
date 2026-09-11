@@ -1,0 +1,10 @@
+{
+  "name": "patman",
+  "version": "1.0.0",
+  "description": "Use personal access tokens stored by the patman CLI to authenticate API requests, without the token value ever entering the transcript",
+  "author": {
+    "name": "Darwin Subramaniam"
+  },
+  "license": "MIT",
+  "keywords": ["secrets", "credentials", "personal-access-token", "curl", "security"]
+}

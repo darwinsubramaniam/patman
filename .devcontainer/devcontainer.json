@@ -1,0 +1,41 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "patman",
+	"image": "mcr.microsoft.com/devcontainers/base:resolute",
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	"features": {
+		// Keep "version" in sync with rust-version in Cargo.toml.
+		// The "default" profile is required: "minimal" omits clippy and rustfmt.
+		"ghcr.io/devcontainers/features/rust:1": {
+			"version": "1.98.1",
+			"profile": "default"
+		},
+		"ghcr.io/siri404/devcontainer-ai-features/claude-code:1": {
+			"version": "latest"
+		}
+	},
+	// Persist the crates.io registry across rebuilds so a fresh container does not
+	// re-download every dependency.
+	"mounts": [
+		"source=patman-cargo-registry,target=/usr/local/cargo/registry,type=volume"
+	],
+	// Warm the dependency cache. The chown covers the first run, when Docker
+	// initialises the named volume above as an empty root-owned directory.
+	"postCreateCommand": "sudo chown -R $(id -u):$(id -g) /usr/local/cargo/registry && cargo fetch",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"rust-lang.rust-analyzer",
+				"panicbit.cargo",
+				"fill-labs.dependi"
+			]
+		}
+	}
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}

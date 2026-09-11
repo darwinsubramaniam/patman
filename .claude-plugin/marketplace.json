@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "patman",
+  "description": "The patman skill: authenticate API calls with locally stored personal access tokens, without disclosing them",
+  "owner": {
+    "name": "Darwin Subramaniam"
+  },
+  "plugins": [
+    {
+      "name": "patman",
+      "source": "./",
+      "description": "Use personal access tokens stored by the patman CLI to authenticate API requests, without the token value ever entering the transcript",
+      "category": "security",
+      "license": "MIT"
+    }
+  ]
+}

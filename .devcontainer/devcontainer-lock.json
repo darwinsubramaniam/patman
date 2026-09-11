@@ -1,0 +1,14 @@
+{
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "1.5.1",
+      "resolved": "ghcr.io/devcontainers/features/rust@sha256:f7afd923fd283db88ca961342ae65ea63a8c95bcf86e42c4c363f43bc4ba26a5",
+      "integrity": "sha256:f7afd923fd283db88ca961342ae65ea63a8c95bcf86e42c4c363f43bc4ba26a5"
+    },
+    "ghcr.io/siri404/devcontainer-ai-features/claude-code:1": {
+      "version": "1.0.1",
+      "resolved": "ghcr.io/siri404/devcontainer-ai-features/claude-code@sha256:e01d8c69a1a863388811b56e3afe4342a3a54d5ed79a4dc088794215b75a89b2",
+      "integrity": "sha256:e01d8c69a1a863388811b56e3afe4342a3a54d5ed79a4dc088794215b75a89b2"
+    }
+  }
+}

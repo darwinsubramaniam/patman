@@ -1,0 +1,25 @@
+[package]
+name = "patman"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.98.1"
+description = "Manage personal access token files under $HOME/.pat/ with a secret-free metadata manifest"
+authors = ["Darwin Subramaniam <darwinsubramaniam@gmail.com>"]
+license = "MIT"
+
+[[bin]]
+name = "patman"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rpassword = "7.5.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+panic = "abort"
