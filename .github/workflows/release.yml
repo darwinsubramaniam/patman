@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: endsWith(matrix.target, '-linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      # A tag that disagrees with Cargo.toml ships artifacts named for a version
+      # the binary does not report. Cheaper to fail here than to re-cut a release.
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          crate="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "${tag#v}" != "$crate" ]; then
+            echo "tag ${tag} does not match Cargo.toml version ${crate}" >&2
+            exit 1
+          fi
+          echo "tag ${tag} matches Cargo.toml version ${crate}"
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          name="patman-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/patman" "dist/${name}/"
+          cp README.md LICENSE "dist/${name}/"
+          tar -C dist -czf "${name}.tar.gz" "${name}"
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          name="patman-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/patman.exe" "dist/${name}/"
+          cp README.md LICENSE "dist/${name}/"
+          (cd dist && 7z a "../${name}.zip" "${name}")
+          sha256sum "${name}.zip" > "${name}.zip.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: patman-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+            *.zip
+            *.zip.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          # Normalise sha256sum's binary marker (" *file") to the "  file" form.
+          cat *.sha256 | sed 's/ \*/  /' | sort -k2 > SHA256SUMS
+          rm -f *.sha256
+          ls -la
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*
+          fail_on_unmatched_files: true
+
+  crates-io:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    # Runs after the GitHub release so that `cargo binstall patman` can find the
+    # prebuilt archives the moment the crate goes live.
+    steps:
+      - name: Check for registry token
+        id: gate
+        env:
+          CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -n "${CARGO_TOKEN}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No CARGO_REGISTRY_TOKEN secret set - skipping crates.io publish."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust
+        if: steps.gate.outputs.enabled == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      # Re-running a release must not hard-fail on "crate version already
+      # uploaded", and crates.io versions are immutable so there is nothing to
+      # redo once it is up.
+      - name: Skip if version already on crates.io
+        if: steps.gate.outputs.enabled == 'true'
+        id: exists
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if curl -sS -A "patman-release-workflow" \
+               "https://crates.io/api/v1/crates/patman/${version}" \
+               | grep -q '"num":"'"${version}"'"'; then
+            echo "patman ${version} is already published."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: cargo publish
+        if: steps.gate.outputs.enabled == 'true' && steps.exists.outputs.published == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked

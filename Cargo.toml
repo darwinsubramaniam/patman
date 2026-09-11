@@ -6,6 +6,27 @@ rust-version = "1.98.1"
 description = "Manage personal access token files under $HOME/.pat/ with a secret-free metadata manifest"
 authors = ["Darwin Subramaniam <darwinsubramaniam@gmail.com>"]
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/darwinsubramaniam/patman"
+homepage = "https://github.com/darwinsubramaniam/patman"
+keywords = ["pat", "token", "secrets", "credentials", "cli"]
+categories = ["command-line-utilities", "authentication"]
+# Everything the crate needs to build and nothing else: the devcontainer, the
+# Claude Code skill, and editor config are repo furniture, not package contents.
+# Leading slashes matter: include globs are gitignore-style, so a bare
+# "README.md" would also sweep in skills/README.md and packaging/*/README.md.
+include = ["/src/**/*.rs", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
+
+# Lets `cargo binstall patman` pull the prebuilt binary from a GitHub release
+# instead of compiling. Must stay in step with the archive naming in
+# .github/workflows/release.yml.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.{ archive-format }"
+bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 [[bin]]
 name = "patman"

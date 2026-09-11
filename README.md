@@ -1,9 +1,42 @@
 # patman
 
+[![CI](https://github.com/darwinsubramaniam/patman/actions/workflows/ci.yml/badge.svg)](https://github.com/darwinsubramaniam/patman/actions/workflows/ci.yml)
+
 Store personal access tokens in `$HOME/.pat/`, locked to your user. Token values
 live in `$HOME/.pat/<service>`; metadata (description, username, pinned hosts)
 lives in `$HOME/.pat/manifest.json` and holds no secrets. No command ever prints
 a token value.
+
+## Install
+
+```sh
+cargo install patman
+```
+
+Builds from source — needs a Rust toolchain, takes a minute. To skip the compile
+and drop in the prebuilt binary for your platform instead:
+
+```sh
+cargo binstall patman
+```
+
+([cargo-binstall](https://github.com/cargo-bins/cargo-binstall) pulls the release
+archive and verifies it; `cargo install cargo-binstall` if you don't have it.)
+
+Note it's `cargo install`, not `cargo add` — `cargo add` writes a dependency into
+a project's `Cargo.toml`, and patman is a binary, not a library.
+
+Prebuilt archives are also on the
+[latest release](https://github.com/darwinsubramaniam/patman/releases/latest) if
+you'd rather not involve cargo — macOS (arm64/x86_64), Linux (arm64/x86_64,
+static musl), Windows (x86_64), with checksums in `SHA256SUMS`:
+
+```sh
+tar -xzf patman-<version>-aarch64-apple-darwin.tar.gz
+sudo install -m 755 patman-<version>-aarch64-apple-darwin/patman /usr/local/bin/
+```
+
+From a clone:
 
 ```sh
 cargo install --path .
@@ -92,6 +125,32 @@ The Claude Code skill lives in `skills/patman/`. Install it into a harness with:
 ./install-skill.sh --project    # ./.claude/skills/patman
 ./install-skill.sh --uninstall
 ```
+
+### Releasing
+
+CI (`.github/workflows/ci.yml`) builds and tests on Linux, macOS, and Windows for
+every push and PR, and gates on `cargo fmt` + `cargo clippy -D warnings`.
+
+Tagging cuts a release:
+
+```sh
+# bump version in Cargo.toml, commit, then:
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+`.github/workflows/release.yml` builds five targets (macOS arm64/x86_64, Linux
+arm64/x86_64 static musl, Windows x86_64), publishes them with `SHA256SUMS` on a
+GitHub release, then pushes the crate to crates.io.
+
+The crates.io step needs a `CARGO_REGISTRY_TOKEN` secret on this repo
+(`cargo login` token from <https://crates.io/settings/tokens>, scoped to
+publish-update; `gh secret set CARGO_REGISTRY_TOKEN`). Without it that job logs a
+skip and the GitHub release still happens. It also no-ops if the version is
+already on crates.io, so re-running a release is safe.
+
+`[package.metadata.binstall]` in `Cargo.toml` maps `cargo binstall` onto those
+release archives — if the archive naming in the release workflow changes, that
+block has to change with it.
 
 ## License
 
