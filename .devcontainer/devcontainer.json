@@ -28,7 +28,8 @@
 			"extensions": [
 				"rust-lang.rust-analyzer",
 				"panicbit.cargo",
-				"fill-labs.dependi"
+				"fill-labs.dependi",
+				"github.vscode-github-actions"
 			]
 		}
 	}
