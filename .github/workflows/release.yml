@@ -27,7 +27,7 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -72,7 +72,7 @@ jobs:
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package (unix)
-        if: matrix.os != 'windows-latest'
+        if: ${{ !contains(matrix.target, '-windows-') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +86,7 @@ jobs:
           shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
 
       - name: Package (windows)
-        if: matrix.os == 'windows-latest'
+        if: ${{ contains(matrix.target, '-windows-') }}
         shell: bash
         run: |
           set -euo pipefail
