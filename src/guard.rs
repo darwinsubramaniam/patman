@@ -14,7 +14,7 @@
 //!    whose host is on the list; schemeless URLs are refused because curl would
 //!    guess a scheme and request them anyway.
 
-use crate::error::{bail, Result};
+use crate::error::{Result, bail};
 
 /// Long options refused outright, matched on the part before any `=`.
 const BLOCKED_EXACT: &[&str] = &[
@@ -236,7 +236,10 @@ mod tests {
             "--config",
             "--libcurl",
         ] {
-            assert!(vet_args(&s(&[bad]), false).is_err(), "{bad} should be blocked");
+            assert!(
+                vet_args(&s(&[bad]), false).is_err(),
+                "{bad} should be blocked"
+            );
         }
     }
 
@@ -260,7 +263,10 @@ mod tests {
             "-:",
             "--location-trusted",
         ] {
-            assert!(vet_args(&s(&[bad]), false).is_err(), "{bad} should be blocked");
+            assert!(
+                vet_args(&s(&[bad]), false).is_err(),
+                "{bad} should be blocked"
+            );
         }
     }
 
@@ -277,21 +283,43 @@ mod tests {
 
     #[test]
     fn allows_ordinary_requests() {
-        assert!(vet_args(
-            &s(&["-sS", "-X", "POST", "-H", "Accept: application/json",
-                 "-d", "{\"a\":1}", "https://api.github.com/user"]),
-            true
-        )
-        .is_ok());
+        assert!(
+            vet_args(
+                &s(&[
+                    "-sS",
+                    "-X",
+                    "POST",
+                    "-H",
+                    "Accept: application/json",
+                    "-d",
+                    "{\"a\":1}",
+                    "https://api.github.com/user"
+                ]),
+                true
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn host_parsing_is_not_fooled() {
-        assert_eq!(host_of("https://api.github.com/user"), Some("api.github.com".into()));
-        assert_eq!(host_of("https://API.GitHub.com:8443/x"), Some("api.github.com".into()));
+        assert_eq!(
+            host_of("https://api.github.com/user"),
+            Some("api.github.com".into())
+        );
+        assert_eq!(
+            host_of("https://API.GitHub.com:8443/x"),
+            Some("api.github.com".into())
+        );
         // userinfo trick: the real destination is after the @
-        assert_eq!(host_of("https://good.com@evil.com/"), Some("evil.com".into()));
-        assert_eq!(host_of("https://good.com#@evil.com"), Some("good.com".into()));
+        assert_eq!(
+            host_of("https://good.com@evil.com/"),
+            Some("evil.com".into())
+        );
+        assert_eq!(
+            host_of("https://good.com#@evil.com"),
+            Some("good.com".into())
+        );
         assert_eq!(host_of("https://[::1]:8080/x"), Some("::1".into()));
         assert_eq!(host_of("https:///nohost"), None);
     }
@@ -301,7 +329,14 @@ mod tests {
         let allowed = s(&["api.github.com", "*.atlassian.net"]);
 
         assert!(enforce_hosts("gh", &s(&["-sS", "https://api.github.com/user"]), &allowed).is_ok());
-        assert!(enforce_hosts("gh", &s(&["--url", "https://x.atlassian.net/rest"]), &allowed).is_ok());
+        assert!(
+            enforce_hosts(
+                "gh",
+                &s(&["--url", "https://x.atlassian.net/rest"]),
+                &allowed
+            )
+            .is_ok()
+        );
 
         // wrong host, userinfo disguise, wildcard does not match the apex
         assert!(enforce_hosts("gh", &s(&["https://evil.com/"]), &allowed).is_err());
@@ -311,12 +346,14 @@ mod tests {
         assert!(enforce_hosts("gh", &s(&["https://x.atlassian.net.evil.com/"]), &allowed).is_err());
 
         // one good URL does not smuggle a second bad one through
-        assert!(enforce_hosts(
-            "gh",
-            &s(&["https://api.github.com/user", "https://evil.com/x"]),
-            &allowed
-        )
-        .is_err());
+        assert!(
+            enforce_hosts(
+                "gh",
+                &s(&["https://api.github.com/user", "https://evil.com/x"]),
+                &allowed
+            )
+            .is_err()
+        );
 
         // http, schemeless, and URL-free invocations are refused outright
         assert!(enforce_hosts("gh", &s(&["http://api.github.com/user"]), &allowed).is_err());
@@ -326,10 +363,23 @@ mod tests {
 
     #[test]
     fn validates_pinned_hosts() {
-        for ok in ["api.github.com", "*.atlassian.net", "localhost", "my-host.corp"] {
+        for ok in [
+            "api.github.com",
+            "*.atlassian.net",
+            "localhost",
+            "my-host.corp",
+        ] {
             assert!(validate_host(ok).is_ok(), "{ok} should be valid");
         }
-        for bad in ["", "https://x.com", "x.com:443", "x.com/path", ".x.com", "x.com.", "a b"] {
+        for bad in [
+            "",
+            "https://x.com",
+            "x.com:443",
+            "x.com/path",
+            ".x.com",
+            "x.com.",
+            "a b",
+        ] {
             assert!(validate_host(bad).is_err(), "{bad:?} should be rejected");
         }
     }

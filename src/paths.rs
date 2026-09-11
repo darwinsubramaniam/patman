@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{bail, Result};
+use crate::error::{Result, bail};
 
 /// Directory components that mean "this path is synced to somebody's cloud".
 /// Matched case-insensitively against each component of the *resolved* path.
@@ -235,6 +235,9 @@ mod tests {
 
         let verdict = assert_not_cloud_synced(&link);
         std::fs::remove_dir_all(&tmp).ok();
-        assert!(verdict.is_err(), "symlink into a sync root should be refused");
+        assert!(
+            verdict.is_err(),
+            "symlink into a sync root should be refused"
+        );
     }
 }

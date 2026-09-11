@@ -4,9 +4,9 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::error::{bail, Context, Result};
+use crate::error::{Context, Result, bail};
 use crate::guard;
-use crate::manifest::{today, Entry, Manifest};
+use crate::manifest::{Entry, Manifest, today};
 use crate::paths;
 use crate::secure;
 use crate::token;
@@ -76,7 +76,11 @@ pub fn list(ctx: &Ctx, json: bool) -> Result<()> {
         for (name, e) in &manifest.entries {
             // A manifest entry whose token file has gone missing is worth
             // flagging inline: it will fail at use time, not at lookup time.
-            let missing = if token::exists(name) { "" } else { "  [FILE MISSING]" };
+            let missing = if token::exists(name) {
+                ""
+            } else {
+                "  [FILE MISSING]"
+            };
             rows.push([
                 name.clone(),
                 e.username.clone().unwrap_or_else(|| "-".into()),
@@ -109,7 +113,9 @@ pub fn lookup(ctx: &Ctx, service: &str, json: bool) -> Result<()> {
                  Describe it with: patman describe {service} -d \"...\""
             ));
         }
-        return bail(format!("no PAT recorded for {service:?} (try: patman list)"));
+        return bail(format!(
+            "no PAT recorded for {service:?} (try: patman list)"
+        ));
     };
 
     if json {
@@ -203,7 +209,7 @@ pub fn save(
             return bail(format!(
                 "a new PAT needs a description — that's what makes it findable later.\n\
                  Try: patman save {service} -d \"which account/site, which scopes\""
-            ))
+            ));
         }
     };
 
@@ -222,7 +228,10 @@ pub fn save(
     drop(secret);
 
     let hosts = if hosts.is_empty() {
-        existing.as_ref().map(|p| p.hosts.clone()).unwrap_or_default()
+        existing
+            .as_ref()
+            .map(|p| p.hosts.clone())
+            .unwrap_or_default()
     } else {
         hosts
     };
@@ -240,7 +249,10 @@ pub fn save(
     );
     manifest.save(&ctx.manifest_path)?;
 
-    println!("Saved {} ({bytes} bytes) and recorded it in the manifest.", path.display());
+    println!(
+        "Saved {} ({bytes} bytes) and recorded it in the manifest.",
+        path.display()
+    );
     if !pinned {
         println!(
             "Tip: pin the API host so this token can only be sent there:\n\
@@ -291,7 +303,10 @@ pub fn describe(
     let hosts = if clear_hosts {
         Vec::new()
     } else if hosts.is_empty() {
-        existing.as_ref().map(|p| p.hosts.clone()).unwrap_or_default()
+        existing
+            .as_ref()
+            .map(|p| p.hosts.clone())
+            .unwrap_or_default()
     } else {
         hosts
     };
@@ -369,8 +384,7 @@ pub fn migrate(ctx: &Ctx, service: &str, from: Option<PathBuf>) -> Result<()> {
         ));
     }
 
-    std::fs::rename(&src, &dest)
-        .ctx(format!("moving {} to {}", src.display(), dest.display()))?;
+    std::fs::rename(&src, &dest).ctx(format!("moving {} to {}", src.display(), dest.display()))?;
     secure::lock_down_file(&dest)?;
 
     println!("Moved {} -> {}", src.display(), dest.display());
@@ -429,7 +443,10 @@ pub fn fix_perms(ctx: &Ctx) -> Result<()> {
         secure::lock_down_file(&ctx.dir.join(&f))?;
         n += 1;
     }
-    println!("Locked down {} and {n} token file(s) to the current user.", ctx.dir.display());
+    println!(
+        "Locked down {} and {n} token file(s) to the current user.",
+        ctx.dir.display()
+    );
     Ok(())
 }
 
@@ -438,7 +455,11 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
     println!("cloud sync: not detected (checked before every command)");
 
     match Manifest::load(&ctx.manifest_path) {
-        Ok(m) => println!("manifest:   valid, {} entr{}", m.entries.len(), if m.entries.len() == 1 { "y" } else { "ies" }),
+        Ok(m) => println!(
+            "manifest:   valid, {} entr{}",
+            m.entries.len(),
+            if m.entries.len() == 1 { "y" } else { "ies" }
+        ),
         Err(e) => println!("manifest:   INVALID — {e}"),
     }
 
@@ -523,7 +544,11 @@ pub fn curl(ctx: &Ctx, service: &str, auth: Auth, args: &[String]) -> Result<()>
     // With pinned hosts, restrict curl itself to https. This is what stops a
     // schemeless stowaway URL (which curl would guess as http) from slipping
     // past the argument scan: curl refuses the protocol before connecting.
-    let proto_line = if hosts.is_empty() { "" } else { "proto = \"=https\"\n" };
+    let proto_line = if hosts.is_empty() {
+        ""
+    } else {
+        "proto = \"=https\"\n"
+    };
     let auth_line = match mode {
         Auth::Basic => {
             let Some(user) = username else {
@@ -532,11 +557,7 @@ pub fn curl(ctx: &Ctx, service: &str, auth: Auth, args: &[String]) -> Result<()>
                      {service:?}.\nSet it with: patman describe {service} --username <id>"
                 ));
             };
-            format!(
-                "user = \"{}:{}\"\n",
-                escape(&user),
-                escape(secret.expose())
-            )
+            format!("user = \"{}:{}\"\n", escape(&user), escape(secret.expose()))
         }
         _ => format!(
             "header = \"Authorization: Bearer {}\"\n",
@@ -565,7 +586,10 @@ pub fn curl(ctx: &Ctx, service: &str, auth: Auth, args: &[String]) -> Result<()>
         return bail(format!(
             "curl exited {}. Do not retry with -v or --trace — they print the \
              Authorization header.",
-            status.code().map(|c| c.to_string()).unwrap_or_else(|| "by signal".into())
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "by signal".into())
         ));
     }
     Ok(())
@@ -665,7 +689,10 @@ mod tests {
         // remainder of an ANSI sequence is harmless in a config value.
         assert_eq!(escape("a\x1bb\x00c"), "abc");
         let escaped = escape("x\"\nurl = \"https://evil.com\"");
-        assert!(!escaped.contains('\n'), "no raw newline may survive: {escaped:?}");
+        assert!(
+            !escaped.contains('\n'),
+            "no raw newline may survive: {escaped:?}"
+        );
         assert_eq!(escaped, "x\\\"\\nurl = \\\"https://evil.com\\\"");
     }
 }

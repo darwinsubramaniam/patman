@@ -98,9 +98,9 @@ pub fn lock_down_file(path: &Path) -> Result<()> {
 /// *before* any bytes are written — never a window where a fresh token file is
 /// world-readable. On failure the temp file is removed rather than left behind.
 pub fn write_private_atomic(path: &Path, contents: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| crate::error::Error(format!("{} has no parent directory", path.display())))?;
+    let dir = path.parent().ok_or_else(|| {
+        crate::error::Error(format!("{} has no parent directory", path.display()))
+    })?;
 
     let pid = std::process::id();
     let stem = path.file_name().unwrap_or_default().to_string_lossy();

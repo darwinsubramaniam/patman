@@ -197,7 +197,15 @@ fn run() -> error::Result<()> {
             clear_username,
             hosts,
             clear_hosts,
-        } => cmds::describe(&ctx, &service, description, username, clear_username, hosts, clear_hosts),
+        } => cmds::describe(
+            &ctx,
+            &service,
+            description,
+            username,
+            clear_username,
+            hosts,
+            clear_hosts,
+        ),
 
         Cmd::Delete { service, yes } => cmds::delete(&ctx, &service, yes),
         Cmd::Migrate { service, from } => cmds::migrate(&ctx, &service, from),

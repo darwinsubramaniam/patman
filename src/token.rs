@@ -9,7 +9,7 @@
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
-use crate::error::{bail, Context, Result};
+use crate::error::{Context, Result, bail};
 use crate::secure;
 
 /// Wrapper that makes a token hard to leak by accident: its `Debug` is redacted,
@@ -39,9 +39,7 @@ impl Drop for Secret {
     fn drop(&mut self) {
         // SAFETY: overwriting UTF-8 with ASCII spaces keeps the string valid.
         unsafe {
-            for b in self.0.as_mut_vec() {
-                *b = 0;
-            }
+            self.0.as_mut_vec().fill(0);
         }
     }
 }
@@ -54,7 +52,7 @@ pub fn read(service: &str) -> Result<Secret> {
             return bail(format!(
                 "no token file for {service:?} (expected at {}). Run: patman save {service}",
                 path.display()
-            ))
+            ));
         }
         Err(e) => return bail(format!("reading token file for {service:?}: {e}")),
     };

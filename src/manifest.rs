@@ -55,7 +55,12 @@ impl Manifest {
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(crate::error::Error(format!("reading {}: {e}", path.display()))),
+            Err(e) => {
+                return Err(crate::error::Error(format!(
+                    "reading {}: {e}",
+                    path.display()
+                )));
+            }
         };
         if raw.trim().is_empty() {
             return Ok(Self::default());
