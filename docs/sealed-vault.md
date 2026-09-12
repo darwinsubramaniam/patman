@@ -112,7 +112,10 @@ crypto. It caps how much the unlock window can be abused.
 - **The TTY check is a speed bump, not a boundary.** `vault::has_tty` proves a
   terminal exists, not that a human is at it — a harness that allocates a pty
   satisfies it. The property that actually holds is the agent one above.
-- **Unix only.** Windows needs named pipes; it stays on passphrase-per-use.
+- **The unlock session is unix only.** Windows needs named pipes. Sealing itself
+  works there — `curl` and `exec` prompt for the passphrase per use, and
+  `unlock`/`lock` fail with a message saying so. Verified by cross-compiling
+  (`cargo check --target x86_64-pc-windows-msvc`), clean under clippy.
 - **No rekey.** Changing the passphrase means `vault init` on a fresh directory.
 - **No fd passing**, so curl sees a pipe, not a tty: no progress meter, nothing
   interactive. Fixing it needs `SCM_RIGHTS`, which std does not expose.
@@ -123,9 +126,11 @@ crypto. It caps how much the unlock window can be abused.
 ## Verifying it
 
 ```
-cargo test                                   # 28 tests
-tests/manual/e2e.sh                            # 14-step end-to-end exercise
-tests/manual/ttl.sh                            # session expiry (takes ~70s)
+cargo test                                  # 28 tests
+cargo check --target x86_64-pc-windows-msvc # the Windows path still builds
+tests/manual/e2e.sh                         # 14-step end-to-end exercise
+tests/manual/ttl.sh                         # session expiry (takes ~70s)
+tests/manual/stdin_with_tty.py              # piped token + console passphrase
 ```
 
 The e2e run covers: plaintext still works → seal → token absent from disk →

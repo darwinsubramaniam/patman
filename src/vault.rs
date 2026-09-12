@@ -129,24 +129,34 @@ pub fn save(vault: &Vault) -> Result<()> {
 
 /// Is there a terminal to prompt on?
 ///
-/// On unix this asks the real question — can this process reach its controlling
-/// terminal — rather than whether stdin happens to be one. They differ in the
-/// case that matters: `op read ... | patman save x --stdin` has a pipe on stdin
-/// and still has a terminal for the passphrase, because rpassword reads
-/// `/dev/tty` directly.
-#[cfg(unix)]
+/// This asks the real question — can this process reach a console — rather than
+/// whether stdin happens to be one. They differ in the case that matters:
+/// `op read ... | patman save x --stdin` has a pipe on stdin and still has a
+/// terminal for the passphrase.
+///
+/// The probe deliberately mirrors what rpassword will do moments later:
+/// `/dev/tty` on unix, `CONIN$` on Windows. Checking a different thing than the
+/// prompt uses is how you get a refusal on a machine that could have prompted
+/// perfectly well.
 pub fn has_tty() -> bool {
-    std::io::stdin().is_terminal()
-        || std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/tty")
-            .is_ok()
-}
+    #[cfg(unix)]
+    const CONSOLE: &str = "/dev/tty";
+    #[cfg(windows)]
+    const CONSOLE: &str = "CONIN$";
 
-#[cfg(not(unix))]
-pub fn has_tty() -> bool {
-    std::io::stdin().is_terminal()
+    #[cfg(any(unix, windows))]
+    {
+        std::io::stdin().is_terminal()
+            || std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(CONSOLE)
+                .is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::io::stdin().is_terminal()
+    }
 }
 
 /// Prompt for the vault passphrase, echo off.

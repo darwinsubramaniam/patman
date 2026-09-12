@@ -51,6 +51,9 @@ impl Drop for Key {
     }
 }
 
+/// The hex hop exists only to hand the key to the unlock agent over a pipe, and
+/// the agent is unix-only — so on Windows these would be dead code.
+#[cfg(any(unix, test))]
 impl Key {
     /// Rebuild a key from the hex form used to hand it to the agent over a pipe.
     pub fn from_hex(s: &str) -> Result<Self> {
