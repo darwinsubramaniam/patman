@@ -1,7 +1,7 @@
 # Sealed files and unlock sessions
 
-Status: **prototype**, on `prototype/sealed-unlock-session`. Working end to end;
-not yet load-bearing for anyone's credentials.
+Design rationale for `patman vault` and `patman unlock`. For how to use them, see
+the [README](../README.md#encrypting-tokens-at-rest).
 
 ## What problem this actually solves
 

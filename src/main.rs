@@ -145,7 +145,7 @@ enum Cmd {
     /// Re-apply owner-only permissions to the directory and every file in it.
     FixPerms,
 
-    /// Full health check: permissions, manifest validity, orphans.
+    /// Full health check: permissions, manifest validity, sealing state, orphans.
     Doctor,
 
     /// Run curl authenticated as <service>. The token goes to curl over stdin,

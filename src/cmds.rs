@@ -820,8 +820,13 @@ pub fn status() -> Result<()> {
 #[cfg(not(unix))]
 pub fn unlock(_ttl_secs: u64) -> Result<()> {
     bail(
-        "the unlock agent is unix-only. On Windows, `patman curl` prompts for the \
-         vault passphrase each time.",
+        "unlock sessions are unix-only — they use a unix-domain socket, and the \
+         Windows named-pipe equivalent is not implemented.\n\n\
+         Sealed tokens still work here: `patman curl` and `patman exec` prompt for \
+         the passphrase on every use.\n\n\
+         Note that this means an agent cannot use a sealed token on Windows, since \
+         a tool call has no console to answer the prompt. If that is what you need, \
+         leave the vault unsealed.",
     )
 }
 

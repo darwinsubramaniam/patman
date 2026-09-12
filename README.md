@@ -2,147 +2,21 @@
 
 [![CI](https://github.com/darwinsubramaniam/patman/actions/workflows/ci.yml/badge.svg)](https://github.com/darwinsubramaniam/patman/actions/workflows/ci.yml)
 
-**What it is for: holding the personal access tokens and passwords you need to
-hand to an AI coding agent — so it can reach GitHub, Jira, GitLab, Confluence or
-your internal APIs on your behalf, without the secret ever passing through the
-model, the transcript, or the process table.**
+Store the personal access tokens and passwords you hand to an AI coding agent, and
+let it authenticate as you without ever learning the secret.
 
 You tell the agent *which* credential to use. It never learns *what* the
 credential is.
 
-Token values live in `$HOME/.pat/<service>`, locked to your user; metadata
-(description, username, pinned hosts) lives in `$HOME/.pat/manifest.json` and
-holds no secrets, so the agent can look up what exists without opening anything
-sensitive. No command ever prints a token value.
+- Token values live in `$HOME/.pat/<service>`, locked to your user. They can be
+  [encrypted under a passphrase](#encrypting-tokens-at-rest).
+- Metadata — description, username, pinned hosts — lives in
+  `$HOME/.pat/manifest.json` and holds no secrets, so it is safe to read and
+  share.
+- **No command ever prints a token value.** There is no `patman show`. The value
+  goes from your terminal into a file, and from that file into a request.
 
-## Why patman exists
-
-The situation it is built for: you are working with an agent in your terminal and
-the task needs a credential. *Create the Jira ticket. List the open PRs. Call the
-internal API.* The agent cannot do any of it without a token — and every obvious
-way of giving it one hands over the secret itself, permanently, to a transcript
-you no longer control.
-
-So patman is not another answer to *where do I store a secret*. Encrypted stores
-already answer that well. It answers the part they leave open: **how a secret
-gets used without leaking into the places secrets actually leak.**
-
-Every general-purpose secret store ends its happy path the same way — `pass
-show`, `op read`, `security find-generic-password -w`, `vault kv get` — printing
-the secret to stdout and handing you the problem back. That was tolerable when a
-human read stdout. It is not tolerable when an AI agent, a CI log, or a shell
-history file reads it.
-
-### The problem
-
-1. **Transcript disclosure.** The moment an agent runs `cat ~/.pat/github` or
-   `TOKEN=$(cat ...)`, the value is in the session history, in every summary made
-   of that history, and in anything the user later shares. Rotation is the only
-   remedy.
-2. **argv disclosure.** `curl -H "Authorization: Bearer $T"` puts the token in
-   the process table, readable by any other process on the machine, and in shell
-   history.
-3. **No binding between a credential and a destination.** A GitHub token will
-   authenticate just as happily to `evil.com`. With an agent in the loop, the URL
-   may have arrived in an issue body or a web page — prompt injection becomes
-   credential exfiltration in one hop.
-4. **Flag-level exfiltration.** Even aimed at the right host, `-v`, `--trace`,
-   `-D`, `-K`, `--proxy`, `--resolve`, `--insecure` and `-L` (which re-sends
-   custom headers across hosts) each turn *make this request* into *disclose the
-   token*. A warning in the docs is not a control.
-5. **No inventory.** `~/.npmrc`, `~/.netrc`, `~/.github_token`, a `.env`, a
-   `GH_TOKEN` in `.bashrc`. Nobody remembers which tokens exist, which account
-   each belongs to, what scopes it has, or whether it is still needed — because
-   the only file that knows is the one you cannot safely open.
-6. **Permission drift.** A token file created by a shell redirect is `0644` for
-   as long as it takes someone to notice.
-7. **No keychain to use.** Headless Linux, devcontainers, SSH boxes and CI
-   sandboxes have no macOS Keychain, often no D-Bus for `gnome-keyring`, and no
-   Vault server to talk to.
-
-### The idea
-
-One invariant, enforced in code rather than in documentation:
-
-> A token value moves from the terminal into a file, and from that file into a
-> request. Nowhere else. It is never printed, never returned to a caller that
-> formats output, and never placed in a command-line argument.
-
-That single rule produces the whole design:
-
-- **There is no read path.** No `patman show`, by choice. The value leaves disk
-  only into curl's stdin (`--config -`) or into a child process's environment
-  (`patman exec`) — never stdout, never argv.
-- **Metadata is split from the secret.** `manifest.json` carries the
-  description, username, pinned hosts and timestamps and no secrets at all, so
-  `list`, `lookup` and `search` are safe for anyone — including an agent — to run
-  freely. That split is what makes the inventory problem solvable without opening
-  the sensitive file.
-- **Pinned hosts are a capability check.** A token pinned to `api.github.com` or
-  `*.atlassian.net` cannot be sent anywhere else: the request is refused before
-  the token is even read from disk. Userinfo disguises
-  (`https://api.github.com@evil.com/`), wildcards against the apex, suffix
-  lookalikes (`x.atlassian.net.evil.com`) and a second URL smuggled in beside a
-  good one are all refused and all covered by tests.
-- **The pass-through argument list is vetted.** The options above are blocked
-  outright, and with hosts pinned curl itself is restricted to https, so a
-  schemeless stowaway URL dies inside curl rather than being guessed into `http`.
-- **`save` refuses to run without a TTY.** The agent structurally cannot be the
-  party that handles plaintext; it can only hand the user a command to run
-  themselves.
-- **A Claude Code skill ships in the repo**, so the agent-side contract —
-  never read these files, authenticate through patman — travels with the tool
-  instead of living in someone's notes.
-
-### How it compares
-
-|  | at rest | used without printing | bound to a host | inventory | requires |
-|---|---|---|---|---|---|
-| `~/.token` + `cat` | 0600, if you remember | no | no | no | — |
-| `.env` / direnv | plaintext | no — whole process tree, visible in `ps` | no | no | — |
-| macOS Keychain, `secret-tool` | encrypted | no — `-w` prints it | no | partial | login session / keyring daemon |
-| `pass` (GPG) | encrypted | no — `pass show` | no | names only | GPG setup |
-| 1Password / Bitwarden CLI | encrypted | no — `op read` prints | no | yes | account, network |
-| HashiCorp Vault | encrypted | no | policy-side | yes | server and ops |
-| git credential helper | varies | yes | per host | no | git only |
-| **patman** | **0600 plaintext** | **yes** | **yes** | **yes** | **nothing** |
-
-Read honestly: patman is **weaker at rest** than every encrypted store and
-**stronger at the point of use** than all of them. It is not a replacement for
-1Password or Vault — it composes with them, taking over the last mile they get
-wrong:
-
-```sh
-op read "op://Private/GitHub PAT/credential" | patman save github --stdin --host api.github.com
-```
-
-### Where it fits
-
-- **Agentic coding**, the case it was built for. Claude Code, Copilot agents,
-  anything that reads your terminal output and may be steered by text it fetched
-  from the internet.
-- **Devcontainers, headless servers, VMs, throwaway boxes** — one static binary,
-  no daemon, no GPG, no network, no account.
-- **A pile of self-hosted services** (Jira, Confluence, GitLab, Artifactory,
-  internal APIs) where every vendor CLI keeps its own credential silo and none of
-  them share an inventory.
-
-### Where it doesn't
-
-- **Not for a threat model that includes code running as you.** `$HOME/.pat/*`
-  is plaintext at `0600`; anything with your uid can read it. The adversary
-  patman is built against is accidental disclosure — transcripts, `ps`, shell
-  history, logs, screen shares, injected URLs — not local malware. If you need
-  encryption at rest, keep the token in a real vault and pipe it in with
-  `--stdin`.
-- **Not for teams.** No sharing, no rotation automation, no audit log, no expiry
-  tracking.
-- **Windows is weaker.** Files are restricted by ACL to your SID, but local
-  Administrators can still read them; there is no equivalent of POSIX `0600`.
-- **`patman exec` trades away the guarantees.** It hands `PAT_TOKEN` to a child
-  process and from there patman controls nothing — no host pinning, no argument
-  vetting. Prefer `patman curl`, which keeps them, and treat `exec` as the
-  deliberate escape hatch it is.
+Why it works this way: [docs/design.md](docs/design.md).
 
 ## Install
 
@@ -164,9 +38,9 @@ Note it's `cargo install`, not `cargo add` — `cargo add` writes a dependency i
 a project's `Cargo.toml`, and patman is a binary, not a library.
 
 Prebuilt archives are also on the
-[latest release](https://github.com/darwinsubramaniam/patman/releases/latest) if
-you'd rather not involve cargo — macOS (arm64/x86_64), Linux (arm64/x86_64,
-static musl), Windows (x86_64), with checksums in `SHA256SUMS`:
+[latest release](https://github.com/darwinsubramaniam/patman/releases/latest) —
+macOS (arm64/x86_64), Linux (arm64/x86_64, static musl), Windows (x86_64), with
+checksums in `SHA256SUMS`:
 
 ```sh
 tar -xzf patman-<version>-aarch64-apple-darwin.tar.gz
@@ -179,11 +53,16 @@ From a clone:
 cargo install --path .
 ```
 
-## Usage
+## Quick start
 
-### Save a token
+```sh
+patman save github -d "personal account, repo + read:org" --host api.github.com
+patman curl github -- -sS https://api.github.com/user
+```
 
-Run it yourself in a real terminal — it prompts with echo off and refuses to run
+## Saving a token
+
+Run this yourself in a real terminal. It prompts with echo off and refuses to run
 without a TTY, so a token is never typed into a tool call. In Claude Code, prefix
 the command with `!`.
 
@@ -195,8 +74,13 @@ patman save github -d "personal account, repo + read:org scopes" -u darwin
 - `-d/--description` — what it's for; required for a new service.
 - `-u/--username` — account id used for Basic auth (an email for Atlassian Cloud,
   a corporate ID for most self-hosted servers). Skip it for Bearer-only APIs.
-- `--host api.github.com` — pin where the token may be sent. Recommended.
-- `--stdin` — read the token from a pipe instead: `op read ... | patman save github --stdin`.
+- `--host api.github.com` — pin where the token may be sent. Recommended; see
+  [host pinning](#host-pinning).
+- `--stdin` — read the token from a pipe instead of prompting:
+
+  ```sh
+  op read "op://Private/GitHub PAT/credential" | patman save github --stdin --host api.github.com
+  ```
 
 The stored value does not have to be a PAT. For a service that authenticates with
 a plain password, save the password and set `-u` — patman uses the pair as the
@@ -205,10 +89,149 @@ Basic auth credentials.
 Saving an existing service replaces the token and keeps the description
 (`patman rotate github` is the same thing).
 
-See what you have with `patman list`, `patman lookup github`, or
-`patman search jira`.
+## Using a token
 
-### Edit the details
+```sh
+patman curl jira -- -sS "https://x.atlassian.net/rest/api/3/myself"
+```
+
+Everything after `--` is passed to curl. The credential reaches curl over stdin
+(`--config -`), so it never appears in `ps` output or your shell history.
+
+The auth scheme is chosen for you: **Basic** (`username:token`) when the manifest
+records a username, **Bearer** otherwise. Override with `--auth bearer` or
+`--auth basic` before the `--`.
+
+For tools that are not curl, `patman exec` runs a command with `PAT_TOKEN`,
+`PAT_USERNAME` and `PAT_SERVICE` in its environment:
+
+```sh
+patman exec gh -- sh -c 'GH_TOKEN=$PAT_TOKEN gh pr list'
+```
+
+Use single quotes, so the token is expanded inside the child process rather than
+in the command you are building. `exec` is the deliberate escape hatch: it hands
+the raw value to whatever runs and applies no host pinning and no argument
+vetting. Prefer `curl` when the tool is curl. Under a sealed vault, `exec` is
+refused unless the service opts in with `patman describe <service> --allow-exec`.
+
+### Host pinning
+
+A pinned host list limits where a token can be sent, so a wrong or injected URL
+cannot carry it somewhere else. `patman curl` warns when a service has no pins,
+and refuses any URL outside the list when it has them.
+
+```sh
+patman describe jira --host acme.atlassian.net
+patman describe gh --host api.github.com --host "*.github.com"
+```
+
+`*.example.com` matches subdomains, not the apex. With hosts pinned, curl is also
+restricted to `https`, and every URL in the arguments must be a full `https://`
+URL — a schemeless one is refused rather than guessed at.
+
+### Refused curl options
+
+Some curl options turn "make this request" into "disclose the token", so patman
+refuses them rather than warning about them: anything that echoes the
+`Authorization` header (`-v`, `--trace*`, `-D`, `--libcurl`), reroutes the request
+(`--proxy*`, `--socks*`, `--resolve`, `--connect-to`, `--unix-socket`), weakens
+transport security (`-k`, `--proto*`), loads another config (`-K`), starts a
+second unvetted request (`--next`), or follows redirects while carrying a Bearer
+token (`-L`, `--location-trusted`) — curl re-sends custom headers to the redirect
+target, including one on another host.
+
+Pass short options separately from their values (`-d value`, not `-dvalue`);
+bundles are scanned character by character, so `-dv` reads as a hidden `-v`.
+
+When a request fails, do not re-run it with `-v` or `--trace` to debug — those
+print the `Authorization` header. Use `-sS -w '\n%{http_code}\n'` instead.
+
+## Encrypting tokens at rest
+
+By default token files are plaintext at `0600`. Sealing encrypts them under a
+passphrase, and makes each use happen inside a session you open and that expires
+on its own.
+
+Nothing changes until you run `vault init`.
+
+```sh
+patman vault init          # set a passphrase; writes $HOME/.pat/vault.json
+patman vault seal          # encrypt every existing token file in place
+```
+
+Files become XChaCha20-Poly1305 ciphertext under an Argon2id key. `vault.json`
+holds the salt and cost parameters and no secrets, so it stays as safe to read as
+the manifest. **There is no recovery** — if you lose the passphrase, rotate the
+tokens at the issuing service.
+
+New tokens are sealed as you save them.
+
+### Unlock sessions
+
+Open a session to use sealed tokens. Run this yourself in a real terminal — like
+`save`, it needs masked input that a tool call cannot provide:
+
+```sh
+patman unlock --minutes 30
+patman status              # sealed? unlocked? how long left?
+patman lock                # end it early
+```
+
+While unlocked, `patman curl` and `patman exec` work exactly as before — same
+syntax, no passphrase. The key is held by a small background process and never
+leaves it: your command sends the *request*, that process decrypts and runs curl,
+and only the output comes back. The session then expires on its own.
+
+When it is locked, a tool call is told what to do rather than failing obscurely:
+
+```
+patman: no terminal available to read the vault passphrase.
+
+The vault is locked and unlocking needs masked input, which an agent's tool call
+cannot provide.
+
+Run it yourself — in Claude Code prefix it with `!`:
+    !patman unlock
+```
+
+Metadata stays readable throughout: `list`, `lookup`, `search`, `status` and
+`doctor` never need the passphrase, so an agent can still see what exists.
+
+### Windows
+
+Unlock sessions are unix-only — they are built on a unix-domain socket, and
+`patman unlock` reports that rather than starting one.
+
+Sealing itself works on Windows: files are encrypted, and `patman curl` and
+`patman exec` prompt for the passphrase on **every** use. That is fine when you
+are driving patman yourself, but it means **an agent cannot use a sealed token on
+Windows** — a tool call has no console to type a passphrase into, so every
+authenticated request fails (or, if the tool call happens to have a console
+attached, waits at a prompt nobody will answer).
+
+So on Windows, pick one:
+
+- **Leave the vault unsealed** if the point is to let an agent authenticate. This
+  is the same posture as patman before sealing existed.
+- **Seal it** if you use patman by hand and want encryption at rest, and accept
+  typing the passphrase per request.
+
+Sessions on Windows need a named-pipe transport, which is not implemented yet.
+
+## Seeing what you have
+
+```sh
+patman list                   # table: service, username, updated, description
+patman list --json            # same, machine-readable
+patman lookup github          # one service: path, username, pinned hosts, updated
+patman search atlassian       # find a token by what it is used for
+```
+
+None of these read a token value, so they are safe to run at any time — including
+from an agent, and including while a vault is locked.
+
+## Editing and deleting
 
 `describe` touches metadata only, never the secret:
 
@@ -218,32 +241,57 @@ patman describe github -u darwin@example.com
 patman describe github --clear-username          # Bearer-only service
 patman describe github --host api.github.com --host "*.github.com"
 patman describe github --clear-hosts             # unpin (token may go anywhere)
+patman describe github --allow-exec              # permit `patman exec`
+patman describe github --deny-exec               # withdraw it
 ```
 
-### Delete a token
-
-Destructive and unconfirmable, so it needs `--yes`:
+Deleting is destructive and unconfirmable, so it needs `--yes`:
 
 ```sh
 patman delete github --yes
 ```
 
-This removes the local file and manifest entry only — revoke the token at the
+That removes the local file and manifest entry only — revoke the token at the
 issuing service too.
 
-### Using a token
+## Housekeeping
 
 ```sh
-patman curl jira -- -sS "https://x.atlassian.net/rest/api/3/myself"
-patman exec gh -- sh -c 'GH_TOKEN=$PAT_TOKEN gh pr list'
+patman doctor        # permissions, manifest validity, sealing state, orphans
+patman orphans       # token files with no manifest entry, and entries with no file
+patman fix-perms     # re-apply owner-only permissions
+patman migrate jira  # move a legacy ~/.jira_pat into $HOME/.pat/jira
 ```
 
-`patman curl` passes the token to curl over stdin, never in argv. Housekeeping
-lives in `patman doctor`, `patman orphans`, and `patman fix-perms`.
+patman refuses to run if `$HOME/.pat` sits inside a cloud-sync root (OneDrive,
+Dropbox, iCloud and friends), including via a symlink — tokens written there
+upload in plaintext and survive deletion through version history.
+
+## What patman does not protect against
+
+- **Code running as you, while a token is reachable.** Unsealed, `$HOME/.pat/*`
+  is plaintext at `0600` and anything with your uid can read it. Sealed and
+  unlocked, anything with your uid can ask the agent to spend the credential —
+  within its pinned hosts, without learning its value. Shorten the exposure with
+  `patman unlock --minutes`.
+- **`patman exec`.** It hands the raw token to a child process; from there patman
+  controls nothing.
+- **Windows file permissions.** Files are restricted by ACL to your SID, but local
+  Administrators can still read them; there is no equivalent of POSIX `0600`.
+  Sealing closes that gap, at the cost of [no agent use on
+  Windows](#windows).
+- **Team use.** No sharing, no rotation automation, no audit log, no expiry
+  tracking.
+
+## Claude Code
+
+A skill ships in `skills/patman/`, so an agent working in your terminal knows to
+authenticate through patman instead of reading the files. Install it with
+`./install-skill.sh`.
 
 ## Dev
 
-Building, source layout, the Claude Code skill, and the release process live in
+Building, source layout, and the release process live in
 [DEVELOPER.md](DEVELOPER.md).
 
 ## License
