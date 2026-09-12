@@ -34,6 +34,13 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
 
+    /// Whether `patman exec` may use this token. Defaults to false, and only
+    /// consulted under a sealed vault — see [`crate::usage::authorize_exec`].
+    /// exec bypasses host pinning and argument vetting by design, so on a sealed
+    /// install it is a per-service decision rather than an ambient capability.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_exec: bool,
+
     /// `YYYY-MM-DD`, last time the token value was written.
     pub updated: String,
 

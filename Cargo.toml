@@ -38,6 +38,24 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rpassword = "7.5.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Sealed token files. Only the raw KDF is wanted from argon2 — the
+# `password-hash` default feature is the PHC string format, which patman has no
+# use for, and it drags in base64/phc parsing. `zeroize` wipes the intermediate
+# hashing state, which is the whole point of being careful here.
+argon2 = { version = "0.6.0", default-features = false, features = [
+    "alloc",
+    "zeroize",
+] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = [
+    "alloc",
+    "zeroize",
+] }
+getrandom = "0.4.3"
+
+# `setsid(2)`, so the unlock agent survives the terminal that started it closing.
+# Unix-only: the agent is a unix-socket design and is not built on Windows.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 strip = true

@@ -5,13 +5,18 @@
 //! It is never printed, never returned to a caller that formats output, and
 //! never placed in a command-line argument.
 
+#[cfg(unix)]
+mod agent;
 mod cmds;
 mod error;
 mod guard;
 mod manifest;
 mod paths;
+mod sealed;
 mod secure;
 mod token;
+mod usage;
+mod vault;
 
 use clap::{Parser, Subcommand};
 
@@ -106,6 +111,16 @@ enum Cmd {
         /// Remove all pinned hosts (returns the token to unrestricted use).
         #[arg(long, conflicts_with = "hosts")]
         clear_hosts: bool,
+
+        /// Let `patman exec` use this token. Under a sealed vault exec is
+        /// refused unless this is set: it skips host pinning and argument
+        /// vetting, so it is a per-service decision rather than a default.
+        #[arg(long)]
+        allow_exec: bool,
+
+        /// Withdraw `--allow-exec`.
+        #[arg(long, conflicts_with = "allow_exec")]
+        deny_exec: bool,
     },
 
     /// Delete a token file and its manifest entry. Requires --yes.
@@ -158,6 +173,46 @@ enum Cmd {
         #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+
+    /// Encrypt token files at rest under a passphrase.
+    #[command(subcommand)]
+    Vault(VaultCmd),
+
+    /// Start an unlock session: hold the vault key in memory so `patman curl`
+    /// works without a passphrase until it expires.
+    ///
+    /// Must be run by you, in a real terminal — in Claude Code, prefix it with
+    /// `!`. This is the gate: an agent can spend a credential during a session
+    /// you opened, and cannot open one itself.
+    Unlock {
+        /// How long the session lasts, in minutes.
+        #[arg(long, default_value_t = 15)]
+        minutes: u64,
+    },
+
+    /// End the unlock session now, wiping the key from memory.
+    Lock,
+
+    /// Report whether the vault is sealed, and whether a session is open.
+    Status,
+
+    /// The unlock agent itself. Started by `patman unlock`; not for direct use.
+    ///
+    /// Reads the vault key from stdin — never argv, which is world-readable via
+    /// the process table.
+    #[command(hide = true)]
+    AgentServe {
+        #[arg(long, default_value_t = 900)]
+        ttl: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum VaultCmd {
+    /// Set a passphrase and start sealing token files.
+    Init,
+    /// Encrypt every plaintext token file in place.
+    Seal,
 }
 
 fn main() {
@@ -197,14 +252,24 @@ fn run() -> error::Result<()> {
             clear_username,
             hosts,
             clear_hosts,
+            allow_exec,
+            deny_exec,
         } => cmds::describe(
             &ctx,
             &service,
-            description,
-            username,
-            clear_username,
-            hosts,
-            clear_hosts,
+            cmds::Edits {
+                description,
+                username,
+                clear_username,
+                hosts,
+                clear_hosts,
+                // None means "leave it as it is" — neither flag given.
+                allow_exec: match (allow_exec, deny_exec) {
+                    (true, _) => Some(true),
+                    (_, true) => Some(false),
+                    _ => None,
+                },
+            },
         ),
 
         Cmd::Delete { service, yes } => cmds::delete(&ctx, &service, yes),
@@ -218,5 +283,16 @@ fn run() -> error::Result<()> {
             args,
         } => cmds::curl(&ctx, &service, auth, &args),
         Cmd::Exec { service, args } => cmds::exec(&ctx, &service, &args),
+
+        Cmd::Vault(VaultCmd::Init) => cmds::vault_init(&ctx),
+        Cmd::Vault(VaultCmd::Seal) => cmds::vault_seal(&ctx),
+        Cmd::Unlock { minutes } => cmds::unlock(minutes.saturating_mul(60)),
+        Cmd::Lock => cmds::lock(),
+        Cmd::Status => cmds::status(),
+
+        #[cfg(unix)]
+        Cmd::AgentServe { ttl } => agent::serve(ttl),
+        #[cfg(not(unix))]
+        Cmd::AgentServe { .. } => error::bail("the unlock agent is unix-only"),
     }
 }

@@ -10,7 +10,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
 use crate::error::{Context, Result, bail};
-use crate::secure;
+use crate::{sealed, secure};
 
 /// Wrapper that makes a token hard to leak by accident: its `Debug` is redacted,
 /// so it cannot show up via `{:?}` in a log line or a panic message, and it has
@@ -44,10 +44,17 @@ impl Drop for Secret {
     }
 }
 
-pub fn read(service: &str) -> Result<Secret> {
+/// Read a token, sealed or plaintext.
+///
+/// The format is detected from the file's own bytes rather than from a config
+/// flag, so a half-migrated directory behaves correctly file by file. Passing a
+/// key for a plaintext file is fine — that is the state during `vault seal` —
+/// but a sealed file with no key is a hard error rather than a fallback, since
+/// the only alternative would be feeding ciphertext to curl as a Bearer token.
+pub fn read(service: &str, key: Option<&sealed::Key>) -> Result<Secret> {
     let path = crate::paths::token_path(service)?;
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
+    let raw = match std::fs::read(&path) {
+        Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return bail(format!(
                 "no token file for {service:?} (expected at {}). Run: patman save {service}",
@@ -57,7 +64,33 @@ pub fn read(service: &str) -> Result<Secret> {
         Err(e) => return bail(format!("reading token file for {service:?}: {e}")),
     };
 
-    let trimmed = raw.trim();
+    let bytes = if sealed::is_sealed(&raw) {
+        let Some(key) = key else {
+            return bail(format!(
+                "the token for {service:?} is sealed and the vault is locked.\n\n\
+                 Unlocking needs your passphrase, which an agent's tool call cannot \
+                 supply.\n\n\
+                 Run it yourself — in Claude Code prefix it with `!`:\n\
+                 \x20   !patman unlock"
+            ));
+        };
+        sealed::open(key, service, &raw)?
+    } else {
+        raw
+    };
+
+    let text = String::from_utf8(bytes).map_err(|_| {
+        crate::error::Error(format!(
+            "the token for {service:?} is not valid UTF-8 — refusing to use it"
+        ))
+    })?;
+    validated(service, &text)
+}
+
+/// The checks every token value passes on the way out of a file, whichever
+/// format it was stored in.
+fn validated(service: &str, text: &str) -> Result<Secret> {
+    let trimmed = text.trim();
     if trimmed.is_empty() {
         return bail(format!(
             "the token file for {service:?} is empty — it was saved wrong or truncated. \
@@ -81,6 +114,22 @@ pub fn exists(service: &str) -> bool {
     crate::paths::token_path(service)
         .map(|p| p.is_file())
         .unwrap_or(false)
+}
+
+/// Is this service's token file sealed? Reads only the magic prefix — it needs
+/// no key and discloses nothing, so `doctor` and `vault seal` can call it freely.
+pub fn is_sealed(service: &str) -> bool {
+    let Ok(path) = crate::paths::token_path(service) else {
+        return false;
+    };
+    let Ok(mut f) = std::fs::File::open(&path) else {
+        return false;
+    };
+    let mut head = [0u8; 8];
+    match f.read_exact(&mut head) {
+        Ok(()) => sealed::is_sealed(&head),
+        Err(_) => false,
+    }
 }
 
 /// Where a token value is allowed to come from.
@@ -138,13 +187,24 @@ pub fn prompt(service: &str, source: Source) -> Result<Secret> {
     Ok(Secret(trimmed.to_string()))
 }
 
-/// Write the token, owner-only, with no trailing newline.
+/// Write the token, owner-only, with no trailing newline — sealed when a key is
+/// supplied, plaintext when it is not.
 ///
 /// A trailing newline is the classic cause of a token that looks right in the
-/// file but fails auth, since it ends up inside the header value.
-pub fn write(service: &str, secret: &Secret) -> Result<std::path::PathBuf> {
+/// file but fails auth, since it ends up inside the header value. Sealing makes
+/// that moot for the stored bytes but not for the value itself, which is why the
+/// trim happens at `prompt` time rather than here.
+pub fn write(
+    service: &str,
+    secret: &Secret,
+    key: Option<&sealed::Key>,
+) -> Result<std::path::PathBuf> {
     let path = crate::paths::token_path(service)?;
-    secure::write_private_atomic(&path, secret.expose().as_bytes())?;
+    let plaintext = secret.expose().as_bytes();
+    match key {
+        Some(key) => secure::write_private_atomic(&path, &sealed::seal(key, service, plaintext)?)?,
+        None => secure::write_private_atomic(&path, plaintext)?,
+    }
     Ok(path)
 }
 
@@ -185,8 +245,11 @@ pub fn list_files(dir: &Path) -> Result<Vec<String>> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        // Skip the manifest and any interrupted atomic write.
-        if name == "manifest.json" || name.starts_with('.') {
+        // Skip patman's own files and any interrupted atomic write. Missing one
+        // here would report it as an orphaned token and invite deleting it —
+        // which for vault.json would strand every sealed token permanently.
+        // (agent.sock needs no entry: it is not a regular file.)
+        if name == "manifest.json" || name == "vault.json" || name.starts_with('.') {
             continue;
         }
         out.push(name);

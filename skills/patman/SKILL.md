@@ -41,6 +41,8 @@ only remedy.
 | `curl`, `exec` | agent — this is how requests get made |
 | `describe` (metadata, host pinning) | agent, after proposing it to the user |
 | `save`, `rotate` | **user only** |
+| `unlock`, `vault init`, `vault seal` | **user only** (passphrase entry) |
+| `status`, `lock` | agent, freely |
 | `delete`, `migrate`, `fix-perms` | user, or agent on explicit request |
 
 `patman save` refuses to run without a TTY, on purpose: masked input needs a real
@@ -50,6 +52,38 @@ to work around it. Ask the user to run it themselves — in Claude Code, prefixe
 ```
 !patman save jira -d "Atlassian Cloud, read:jira-work" -u alice@example.com --host acme.atlassian.net
 ```
+
+## Sealed vaults and unlock sessions
+
+Some installations encrypt token files at rest under a passphrase. Check with
+`patman status`, which never needs a passphrase:
+
+```
+vault:   none — token files are plaintext          # nothing changes for you
+vault:   sealed, locked — run: patman unlock       # curl/exec will refuse
+vault:   unlocked, 12m04s remaining                # curl/exec work normally
+```
+
+**When it says locked, stop and ask the user to unlock.** Do not try to work around it —
+there is no way to, by design, and attempting one wastes a turn:
+
+```
+!patman unlock --minutes 30
+```
+
+While unlocked, `patman curl` and `patman exec` work exactly as documented below, with no
+passphrase and no change in syntax. The session expires on its own, so a long task may
+outlive it; if a command starts failing with "the vault is locked", ask for another
+unlock rather than assuming the token is broken.
+
+What stays true whether or not a vault exists: `list`, `lookup`, `search`, `status` and
+`doctor` read only metadata and never need a passphrase. Reach for them freely.
+
+Under a sealed vault, `patman exec` is **refused unless the service opts in**, because
+exec skips host pinning and argument vetting. If you get "`patman exec` is not enabled",
+prefer rewriting the call as `patman curl`. Only if that is genuinely impossible, propose
+`patman describe <service> --allow-exec` to the user and explain what it gives up — do not
+run it silently to make a command work.
 
 ## Workflow
 
@@ -136,6 +170,10 @@ Instead:
   issuing service. Check `patman lookup <service>` for the recorded `updated` date.
 - **"host X is not on the allowed list"** — intended behaviour. Confirm the host is right,
   then propose the `patman describe --host` command.
+- **"the vault is locked"** — ask the user to `!patman unlock`. Not a token problem; the
+  credential is fine, the session has expired or never started.
+- **"`patman exec` is not enabled"** — rewrite the call as `patman curl` if you can; see
+  the sealed-vault section above before proposing `--allow-exec`.
 - **"no token file for X"** or `[FILE MISSING]` in `list` — ask the user to `!patman save X`.
 - **"contains control characters" / "is empty"** — the file was saved wrong. Ask the user
   to re-save.

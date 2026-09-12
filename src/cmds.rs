@@ -8,8 +8,14 @@ use crate::error::{Context, Result, bail};
 use crate::guard;
 use crate::manifest::{Entry, Manifest, today};
 use crate::paths;
+use crate::sealed;
 use crate::secure;
 use crate::token;
+use crate::usage;
+use crate::vault;
+
+#[cfg(unix)]
+use crate::agent;
 
 /// A username lands inside the curl config (`user = "name:token"`), so control
 /// characters are rejected the same way they are for tokens. It is metadata,
@@ -213,6 +219,18 @@ pub fn save(
         }
     };
 
+    // Passphrase before the token, so a mistyped passphrase is discovered before
+    // the user has pasted a credential rather than after. Note this does not use
+    // a running agent: the agent protocol has no message that writes a token,
+    // deliberately, so `save` always asks the human directly.
+    let key = if vault::is_sealed_install() {
+        let v = vault::load()?;
+        let pass = vault::prompt_passphrase("Vault passphrase (input hidden): ")?;
+        Some(vault::unlock(&v, &pass)?)
+    } else {
+        None
+    };
+
     let source = if from_stdin {
         token::Source::Stdin
     } else {
@@ -223,7 +241,7 @@ pub fn save(
     // Token first, manifest second. If the manifest write fails, the result is
     // an untracked token file — harmless, and surfaced by `patman orphans`.
     // The reverse order would leave a manifest entry pointing at nothing.
-    let path = token::write(service, &secret)?;
+    let path = token::write(service, &secret, key.as_ref())?;
     let bytes = secret.len();
     drop(secret);
 
@@ -241,6 +259,7 @@ pub fn save(
         service.to_string(),
         Entry {
             description,
+            allow_exec: existing.as_ref().map(|p| p.allow_exec).unwrap_or(false),
             username: username.or_else(|| existing.as_ref().and_then(|p| p.username.clone())),
             hosts,
             updated: today(),
@@ -262,15 +281,29 @@ pub fn save(
     Ok(())
 }
 
-pub fn describe(
-    ctx: &Ctx,
-    service: &str,
-    description: Option<String>,
-    username: Option<String>,
-    clear_username: bool,
-    hosts: Vec<String>,
-    clear_hosts: bool,
-) -> Result<()> {
+/// The edits `describe` can make. Every field is "leave it alone" by default, so
+/// adding a new piece of metadata does not mean touching every call site.
+#[derive(Default)]
+pub struct Edits {
+    pub description: Option<String>,
+    pub username: Option<String>,
+    pub clear_username: bool,
+    pub hosts: Vec<String>,
+    pub clear_hosts: bool,
+    /// `None` leaves the flag as it is; `Some` sets it.
+    pub allow_exec: Option<bool>,
+}
+
+pub fn describe(ctx: &Ctx, service: &str, edits: Edits) -> Result<()> {
+    let Edits {
+        description,
+        username,
+        clear_username,
+        hosts,
+        clear_hosts,
+        allow_exec,
+    } = edits;
+
     paths::validate_service(service)?;
     if let Some(u) = &username {
         validate_username(u)?;
@@ -315,6 +348,8 @@ pub fn describe(
         service.to_string(),
         Entry {
             description,
+            allow_exec: allow_exec
+                .unwrap_or_else(|| existing.as_ref().map(|p| p.allow_exec).unwrap_or(false)),
             username,
             hosts,
             // Metadata-only edit: `updated` tracks the token value, so an entry
@@ -463,6 +498,41 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
         Err(e) => println!("manifest:   INVALID — {e}"),
     }
 
+    // Report sealing per file rather than from vault.json alone. A vault with
+    // unsealed tokens still under it is exactly the state that looks protected
+    // and is not, so it gets named rather than averaged away.
+    let files = token::list_files(&ctx.dir)?;
+    let plaintext: Vec<&String> = files.iter().filter(|s| !token::is_sealed(s)).collect();
+
+    if !vault::is_sealed_install() {
+        println!("vault:      none — token files are plaintext at rest");
+        println!("            (patman vault init to encrypt them)");
+    } else if plaintext.is_empty() {
+        println!(
+            "vault:      sealed, all {} token file(s) encrypted",
+            files.len()
+        );
+    } else {
+        println!(
+            "vault:      MIXED — {} of {} token file(s) are still plaintext:",
+            plaintext.len(),
+            files.len()
+        );
+        for s in &plaintext {
+            println!("              {s}");
+        }
+        println!("            Seal them with: patman vault seal");
+    }
+
+    #[cfg(unix)]
+    if vault::is_sealed_install() {
+        if agent::is_running() {
+            println!("session:    unlocked (patman status for the remaining time)");
+        } else {
+            println!("session:    locked");
+        }
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -498,73 +568,77 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
 
 // ------------------------------------------------------------------ usage
 
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum Auth {
-    /// `Authorization: Bearer <token>`
-    Bearer,
-    /// `Authorization: Basic base64(username:token)` — needs a manifest username.
-    Basic,
-    /// Basic when the manifest records a username, Bearer otherwise.
-    Auto,
+/// Re-exported so `main`'s clap derive keeps its `cmds::Auth` path, while the
+/// rules themselves live in `usage` beside the agent that also enforces them.
+pub use crate::usage::Auth;
+
+/// The key needed to read this service's token, or `None` when none is.
+///
+/// Checks the file, not the config: a vault can exist while some tokens are
+/// still plaintext (between `vault init` and `vault seal`), and those need no
+/// passphrase. Prompting for one anyway would train the habit of typing the
+/// vault passphrase at prompts that do not need it.
+fn key_for(service: &str) -> Result<Option<sealed::Key>> {
+    if !vault::is_sealed_install() || !token::is_sealed(service) {
+        return Ok(None);
+    }
+    let v = vault::load()?;
+    let pass = vault::prompt_passphrase("Vault passphrase (input hidden): ")?;
+    vault::unlock(&v, &pass).map(Some)
 }
 
-/// Run curl with the token supplied over its stdin via `--config -`.
+fn curl_result(code: Option<i32>) -> Result<()> {
+    match code {
+        Some(0) => Ok(()),
+        other => bail(format!(
+            "curl exited {}. Do not retry with -v or --trace — they print the \
+             Authorization header.",
+            other
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "by signal".into())
+        )),
+    }
+}
+
+/// Run curl authenticated as `service`.
 ///
-/// The secret never enters argv. A secret in a command-line argument is visible
-/// in the process table for the duration of the request — `ps -o args=` on the
-/// curl PID would print the `Authorization` header verbatim, readable by any
-/// other user on the machine.
+/// Three paths, chosen by what is on disk rather than by a flag:
+///
+/// 1. **Plaintext install** — read the file and spawn curl here, exactly as
+///    before. Sealing is opt-in, so nobody's setup changes until they run
+///    `patman vault init`.
+/// 2. **Sealed, agent running** — hand the request to the agent, which holds the
+///    key. This process never sees the token; it relays output and an exit code.
+/// 3. **Sealed, no agent** — prompt for the passphrase, if there is a terminal.
+///    That is the human path. Without a terminal it fails with instructions,
+///    which is the entire point: an agent-driven call cannot spend a locked
+///    credential, and cannot unlock one either.
 pub fn curl(ctx: &Ctx, service: &str, auth: Auth, args: &[String]) -> Result<()> {
-    let manifest = Manifest::load(&ctx.manifest_path)?;
-    let entry = manifest.get(service);
-    let username = entry.and_then(|e| e.username.clone());
-    let hosts = entry.map(|e| e.hosts.clone()).unwrap_or_default();
+    paths::validate_service(service)?;
 
-    let mode = match auth {
-        Auth::Auto if username.is_some() => Auth::Basic,
-        Auth::Auto => Auth::Bearer,
-        other => other,
-    };
-
-    // Both checks run before the token is even read from disk. The flag
-    // blocklist is unconditional; the host allowlist applies when the manifest
-    // pins hosts for this service.
-    guard::vet_args(args, matches!(mode, Auth::Bearer))?;
-    if hosts.is_empty() {
-        eprintln!(
-            "patman: warning: no hosts pinned for {service:?} — the token will be sent \
-             to whatever URL curl is given.\n\
-             patman: pin the API host with: patman describe {service} --host api.example.com"
-        );
-    } else {
-        guard::enforce_hosts(service, args, &hosts)?;
+    #[cfg(unix)]
+    if vault::is_sealed_install() && agent::is_running() {
+        let code = agent::send(&agent::Request::Curl {
+            service: service.to_string(),
+            auth,
+            args: args.to_vec(),
+        })?;
+        return curl_result(Some(code));
     }
 
-    let secret = token::read(service)?;
-    // With pinned hosts, restrict curl itself to https. This is what stops a
-    // schemeless stowaway URL (which curl would guess as http) from slipping
-    // past the argument scan: curl refuses the protocol before connecting.
-    let proto_line = if hosts.is_empty() {
-        ""
-    } else {
-        "proto = \"=https\"\n"
-    };
-    let auth_line = match mode {
-        Auth::Basic => {
-            let Some(user) = username else {
-                return bail(format!(
-                    "Basic auth needs an account identifier, and the manifest has none for \
-                     {service:?}.\nSet it with: patman describe {service} --username <id>"
-                ));
-            };
-            format!("user = \"{}:{}\"\n", escape(&user), escape(secret.expose()))
-        }
-        _ => format!(
-            "header = \"Authorization: Bearer {}\"\n",
-            escape(secret.expose())
-        ),
-    };
-    let config = format!("{proto_line}{auth_line}");
+    let key = key_for(service)?;
+    let manifest = Manifest::load(&ctx.manifest_path)?;
+    let plan = usage::plan(&manifest, service, auth);
+
+    // Both checks run before the token is read from disk. The flag blocklist is
+    // unconditional; the host allowlist applies when the manifest pins hosts.
+    if let Some(warning) = usage::authorize_curl(service, args, &plan)? {
+        eprintln!("patman: {warning}");
+    }
+
+    let secret = token::read(service, key.as_ref())?;
+    let config = usage::curl_config(service, &plan, &secret)?;
+    drop(secret);
 
     // `--config -` is the only curl option that reads settings from stdin, which
     // is what keeps argv clean.
@@ -577,46 +651,8 @@ pub fn curl(ctx: &Ctx, service: &str, auth: Auth, args: &[String]) -> Result<()>
         .ctx("running curl (is it installed and on PATH?)")?;
 
     token::feed_stdin(&mut child, &config)?;
-    drop(secret);
-
     let status = child.wait().ctx("waiting for curl")?;
-    if !status.success() {
-        // Deliberately terse. Do not re-run with -v/--trace on failure: those
-        // echo the Authorization header straight into the transcript.
-        return bail(format!(
-            "curl exited {}. Do not retry with -v or --trace — they print the \
-             Authorization header.",
-            status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "by signal".into())
-        ));
-    }
-    Ok(())
-}
-
-/// Escape a value for curl's config-file quoting rules.
-///
-/// The config format is line-oriented, so a raw newline in a value would start
-/// a new config directive — an injection, not a quoting problem. Newlines, CRs
-/// and tabs use curl's supported in-string escapes; any other control character
-/// has no representation and is dropped. Tokens and usernames are additionally
-/// rejected upstream if they contain control characters at all, so for them
-/// this is defense in depth rather than the only line.
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    out
+    curl_result(status.code())
 }
 
 /// Run an arbitrary command with the token in its environment.
@@ -625,19 +661,34 @@ fn escape(s: &str) -> String {
 /// not shown by `ps` to other users, and `/proc/<pid>/environ` is readable only
 /// by the owner. Prefer `patman curl` when the tool is curl.
 pub fn exec(ctx: &Ctx, service: &str, args: &[String]) -> Result<()> {
+    paths::validate_service(service)?;
+    let sealed_install = vault::is_sealed_install();
+
+    #[cfg(unix)]
+    if sealed_install && agent::is_running() {
+        let code = agent::send(&agent::Request::Exec {
+            service: service.to_string(),
+            args: args.to_vec(),
+        })?;
+        std::process::exit(code);
+    }
+
     let Some((program, rest)) = args.split_first() else {
         return bail("nothing to run — usage: patman exec <service> -- <command> [args...]");
     };
 
     let manifest = Manifest::load(&ctx.manifest_path)?;
-    let username = manifest.get(service).and_then(|e| e.username.clone());
-    let secret = token::read(service)?;
+    let plan = usage::plan(&manifest, service, Auth::Auto);
+    usage::authorize_exec(service, &plan, sealed_install)?;
+
+    let key = key_for(service)?;
+    let secret = token::read(service, key.as_ref())?;
 
     let mut cmd = Command::new(program);
     cmd.args(rest);
     cmd.env("PAT_SERVICE", service);
     cmd.env("PAT_TOKEN", secret.expose());
-    if let Some(u) = &username {
+    if let Some(u) = &plan.username {
         cmd.env("PAT_USERNAME", u);
     }
 
@@ -648,6 +699,146 @@ pub fn exec(ctx: &Ctx, service: &str, args: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+// ------------------------------------------------------------------ vault
+
+pub fn vault_init(ctx: &Ctx) -> Result<()> {
+    if vault::is_sealed_install() {
+        return bail(format!(
+            "{} already exists — this installation is already sealed.",
+            vault::path()?.display()
+        ));
+    }
+
+    println!(
+        "This passphrase encrypts every token file. There is no recovery: lose it \
+         and the tokens are gone (rotate them at the provider instead)."
+    );
+    let pass = vault::prompt_new_passphrase()?;
+    vault::create(&pass)?;
+
+    println!("\nCreated {}", vault::path()?.display());
+
+    let plaintext: Vec<String> = token::list_files(&ctx.dir)?
+        .into_iter()
+        .filter(|s| !token::is_sealed(s))
+        .collect();
+
+    if plaintext.is_empty() {
+        println!("New tokens will be sealed as they are saved.");
+    } else {
+        println!(
+            "\n{} existing token file(s) are still plaintext.\nSeal them with:  patman vault seal",
+            plaintext.len()
+        );
+    }
+    Ok(())
+}
+
+/// Encrypt every plaintext token file in place.
+///
+/// Per-file and atomic, so an interruption leaves each token either wholly
+/// plaintext or wholly sealed — and `token::read` detects the format per file,
+/// so a partly-sealed directory keeps working either way.
+pub fn vault_seal(ctx: &Ctx) -> Result<()> {
+    let v = vault::load()?;
+    let pass = vault::prompt_passphrase("Vault passphrase (input hidden): ")?;
+    let key = vault::unlock(&v, &pass)?;
+
+    let mut sealed_count = 0usize;
+    let mut already = 0usize;
+
+    for service in token::list_files(&ctx.dir)? {
+        if paths::validate_service(&service).is_err() {
+            eprintln!("patman: skipping {service:?} — not a valid service name");
+            continue;
+        }
+        if token::is_sealed(&service) {
+            already += 1;
+            continue;
+        }
+        let secret = token::read(&service, None)?;
+        token::write(&service, &secret, Some(&key))?;
+        drop(secret);
+        sealed_count += 1;
+        println!("sealed {service}");
+    }
+
+    println!("\n{sealed_count} sealed, {already} already sealed.");
+    if sealed_count > 0 {
+        println!("Start a session with:  patman unlock");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn unlock(ttl_secs: u64) -> Result<()> {
+    if !vault::is_sealed_install() {
+        return bail("this installation is not sealed — run: patman vault init");
+    }
+    if agent::is_running() {
+        return bail("already unlocked — see: patman status");
+    }
+    let v = vault::load()?;
+    let pass = vault::prompt_passphrase("Vault passphrase (input hidden): ")?;
+    let key = vault::unlock(&v, &pass)?;
+    agent::spawn(&key, ttl_secs)?;
+
+    println!(
+        "Unlocked for {}m. `patman curl` and `patman exec` will work without a \
+         passphrase until it expires.",
+        ttl_secs / 60
+    );
+    println!("Lock early with:  patman lock");
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn lock() -> Result<()> {
+    if !agent::is_running() {
+        println!("Already locked.");
+        return Ok(());
+    }
+    agent::send(&agent::Request::Lock)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn status() -> Result<()> {
+    if !vault::is_sealed_install() {
+        println!("vault:   none — token files are plaintext (patman vault init to seal)");
+        return Ok(());
+    }
+    if agent::is_running() {
+        print!("vault:   ");
+        agent::send(&agent::Request::Status)?;
+    } else {
+        println!("vault:   sealed, locked — run: patman unlock");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn unlock(_ttl_secs: u64) -> Result<()> {
+    bail(
+        "the unlock agent is unix-only. On Windows, `patman curl` prompts for the \
+         vault passphrase each time.",
+    )
+}
+
+#[cfg(not(unix))]
+pub fn lock() -> Result<()> {
+    bail("the unlock agent is unix-only — there is no session to lock.")
+}
+
+#[cfg(not(unix))]
+pub fn status() -> Result<()> {
+    if vault::is_sealed_install() {
+        println!("vault:   sealed (passphrase prompted per use; no agent on Windows)");
+    } else {
+        println!("vault:   none — token files are plaintext");
+    }
+    Ok(())
+}
 // ------------------------------------------------------------------ output
 
 fn print_table(rows: &[[String; 4]]) {
@@ -667,32 +858,5 @@ fn print_table(rows: &[[String; 4]]) {
             }
         }
         println!("{}", line.trim_end());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::escape;
-
-    /// curl's config parser treats backslash and double-quote as special inside
-    /// a quoted value, and the format itself is line-oriented. A value must not
-    /// be able to terminate the quoted string early, and must never contain a
-    /// raw newline — that would start a fresh config directive.
-    #[test]
-    fn escapes_curl_config_metacharacters() {
-        assert_eq!(escape("plain-token-123"), "plain-token-123");
-        assert_eq!(escape(r#"a"b"#), r#"a\"b"#);
-        assert_eq!(escape(r"a\b"), r"a\\b");
-        assert_eq!(escape("a\nb"), r"a\nb");
-        assert_eq!(escape("a\r\tb"), r"a\r\tb");
-        // Other control characters (ESC, NUL) are dropped; the printable
-        // remainder of an ANSI sequence is harmless in a config value.
-        assert_eq!(escape("a\x1bb\x00c"), "abc");
-        let escaped = escape("x\"\nurl = \"https://evil.com\"");
-        assert!(
-            !escaped.contains('\n'),
-            "no raw newline may survive: {escaped:?}"
-        );
-        assert_eq!(escaped, "x\\\"\\nurl = \\\"https://evil.com\\\"");
     }
 }
