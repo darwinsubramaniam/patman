@@ -4,22 +4,27 @@
 
 **Let your AI coding agent use your API tokens without ever seeing them.**
 
-Say you ask Claude Code, Codex, or Cursor to "list my open GitHub PRs". It needs your
-GitHub token. The usual ways to give it one all leak it: paste it into the chat, or
-leave it in a file the agent reads, and the token ends up in the conversation
-history for good.
+Say you ask Claude Code, Codex, or Cursor to "list my open Jira tickets". There's no
+logged-in command-line tool for that, so the agent has to call Jira's API, and the
+API needs your token. The usual ways to hand it over all leak it: paste it into the
+chat, or leave it in a file the agent reads, and the token ends up in the
+conversation history for good.
 
 With patman, you store the token once, and the agent asks patman to make the request
 for it:
 
 ```
-you:    patman save github            ← you type the token once, hidden
-agent:  patman curl github -- https://api.github.com/user/repos
+you:    patman save jira              ← you type the token once, hidden
+agent:  patman curl jira -- https://company.atlassian.net/rest/api/3/search?jql=...
                                        ← patman adds the token; the agent gets
                                          the response, never the token
 ```
 
 The agent knows *which* token to use. It never learns *what* the token is.
+
+patman is for APIs the agent reaches with a token: Jira, Confluence, GitLab, an
+internal company API, and so on. A service whose own CLI is already logged in, like
+GitHub with `gh`, doesn't need it.
 
 ## Install
 
@@ -46,14 +51,15 @@ OpenCode):
 **2. Save a token.** Run this yourself, in a terminal window:
 
 ```sh
-patman save github -d "my GitHub account" --host api.github.com
+patman save jira -d "work Jira" -u me@company.com --host company.atlassian.net
 ```
 
-patman asks for the token and hides what you type. `-d` says what the token is for.
-`--host` says where it may be sent, so it can't go anywhere else.
+patman asks for the token and hides what you type. `-d` says what the token is for,
+`-u` is your account name (Jira logs in with email + token), and `--host` says where
+the token may be sent, so it can't go anywhere else.
 
 **3. Ask your agent.** Start a new agent session and ask it something that needs the
-token, like "show my GitHub profile". The agent finds the token with `patman list`
+token, like "list my open Jira tickets". The agent finds the token with `patman list`
 and makes the call with `patman curl`.
 
 ## Who does what
@@ -75,11 +81,11 @@ None of these commands ever prints a token, not even for you. There is no
 ## Everyday use
 
 ```sh
-# Store a token that needs a username too (Jira, Confluence, most company servers)
-patman save jira -d "work Jira" -u me@company.com --host company.atlassian.net
+# Store a token that needs no username (GitLab, most token-only APIs)
+patman save gitlab -d "company GitLab, read_api" --host gitlab.company.com
 
 # Make a request (everything after -- goes to curl)
-patman curl jira -- -sS https://company.atlassian.net/rest/api/3/myself
+patman curl gitlab -- -sS https://gitlab.company.com/api/v4/user
 
 # Replace a token that expired (keeps the description)
 patman save jira
@@ -88,7 +94,7 @@ patman save jira
 patman describe jira -d "work Jira, read-only"
 
 # Read a token from a password manager instead of typing it
-op read "op://Private/GitHub/token" | patman save github --stdin
+op read "op://Work/GitLab/token" | patman save gitlab --stdin
 ```
 
 patman picks the login method for you: username + token when you set `-u`, a plain
@@ -120,7 +126,7 @@ as one with write access, you approve every use. On macOS that's a Touch ID prom
 showing exactly what is being sent:
 
 ```sh
-patman describe github --approval request
+patman describe gitlab --approval request
 ```
 
 ## How the agent is kept away from your tokens

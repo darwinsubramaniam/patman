@@ -37,8 +37,8 @@ In Claude Code, use a separate terminal window: the `!` prefix has no terminal, 
 the prompt can't appear there.
 
 ```sh
-patman save github -d "personal account, repo + read:org scopes" -u darwin
-# Paste the github token (input hidden):
+patman save jira -d "work Jira, read + write issues" -u me@company.com
+# Paste the jira token (input hidden):
 ```
 
 | Option | Meaning |
@@ -49,19 +49,19 @@ patman save github -d "personal account, repo + read:org scopes" -u darwin
 | `--stdin` | Read the token from a pipe instead of prompting. |
 
 ```sh
-op read "op://Private/GitHub PAT/credential" | patman save github --stdin --host api.github.com
+op read "op://Work/GitLab/token" | patman save gitlab --stdin --host gitlab.company.com
 ```
 
 The value doesn't have to be a personal access token. For a service that logs in with
 a password, save the password and set `-u`; patman sends the pair as Basic auth.
 
 Saving a service that already exists replaces the token and keeps the description.
-`patman rotate github` does the same thing.
+`patman rotate jira` does the same thing.
 
 ## Using a token
 
 ```sh
-patman curl jira -- -sS "https://x.atlassian.net/rest/api/3/myself"
+patman curl jira -- -sS "https://company.atlassian.net/rest/api/3/myself"
 ```
 
 Everything after `--` goes to curl. patman hands curl the credential on stdin
@@ -75,7 +75,7 @@ For tools other than curl, `patman exec` runs a command with `PAT_TOKEN`,
 `PAT_USERNAME` and `PAT_SERVICE` set in its environment:
 
 ```sh
-patman exec gh -- sh -c 'GH_TOKEN=$PAT_TOKEN gh pr list'
+patman exec gitlab -- sh -c 'GITLAB_TOKEN=$PAT_TOKEN glab mr list'
 ```
 
 Use single quotes, so the token is expanded inside the child process and not in the
@@ -91,8 +91,8 @@ carry it somewhere else. `patman curl` warns when a service has no pins, and ref
 any URL outside the list when it has them.
 
 ```sh
-patman describe jira --host acme.atlassian.net
-patman describe gh --host api.github.com --host "*.github.com"
+patman describe jira --host company.atlassian.net
+patman describe gitlab --host gitlab.company.com --host "*.company.com"
 ```
 
 `*.example.com` matches subdomains, not `example.com` itself. With hosts pinned,
@@ -176,15 +176,15 @@ A session lets every encrypted token be used without you until it expires. For a
 token you want to approve call by call, turn on per-request approval:
 
 ```sh
-patman describe github --approval request    # asks for the passphrase
+patman describe gitlab --approval request    # asks for the passphrase
 ```
 
-From then on, even inside an open session, every `patman curl github ...` waits for
+From then on, even inside an open session, every `patman curl gitlab ...` waits for
 you:
 
 - **macOS**: a Touch ID dialog (or your login password) that names the request, for
-  example *patman is trying to send your "github" token: POST
-  https://api.github.com/repos/... with body ...*
+  example *patman is trying to send your "gitlab" token: POST
+  https://gitlab.company.com/api/v4/projects/... with body ...*
 - **Linux and other unix systems**: the command shows the request and asks for the
   vault passphrase. From an agent's tool call, which has no terminal, it's refused
   with instructions to run it yourself.
@@ -200,7 +200,7 @@ and `--approval`) are signed with the vault key. Changing any of them with
 patman is refused when the token is next used:
 
 ```
-patman: the policy for "github" has been changed without the vault passphrase
+patman: the policy for "jira" has been changed without the vault passphrase
 ```
 
 So nothing running as you can loosen a token's rules to get around them. Changing
@@ -230,7 +230,7 @@ Windows sessions need a named-pipe transport, which isn't built yet.
 ```sh
 patman list                   # table: service, username, updated, description
 patman list --json            # the same, as JSON
-patman lookup github          # one service: path, username, pinned hosts, updated
+patman lookup jira            # one service: path, username, pinned hosts, updated
 patman search atlassian       # find a token by what it's used for
 ```
 
@@ -240,19 +240,19 @@ and while the vault is locked.
 `describe` changes metadata only, never the token:
 
 ```sh
-patman describe github -d "work account, repo scope only"
-patman describe github -u darwin@example.com
-patman describe github --clear-username          # plain-token service
-patman describe github --host api.github.com --host "*.github.com"
-patman describe github --clear-hosts             # unpin: the token may go anywhere
-patman describe github --allow-exec              # permit `patman exec`
-patman describe github --deny-exec               # take that back
+patman describe jira -d "work Jira, read-only"
+patman describe jira -u me@company.com
+patman describe gitlab --clear-username          # plain-token service
+patman describe jira --host company.atlassian.net
+patman describe jira --clear-hosts               # unpin: the token may go anywhere
+patman describe jira --allow-exec                # permit `patman exec`
+patman describe jira --deny-exec                 # take that back
 ```
 
 Deleting can't be undone, so it needs `--yes`:
 
 ```sh
-patman delete github --yes
+patman delete jira --yes
 ```
 
 This removes the local file and its manifest entry only. Revoke the token at the
