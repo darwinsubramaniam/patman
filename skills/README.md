@@ -14,28 +14,42 @@ cargo install --path .     # from a checkout of this repo
 
 ## Installing it
 
-Three routes, in rough order of how permanent the install is.
+### 1. `patman init` (the normal route)
 
-### 1. Personal (every project on this machine)
+The skill is compiled into the binary, so `patman init` installs the copy matching the
+CLI into every harness it detects:
+
+| `--agent` | Read by | Personal | Project (`--project [DIR]`) |
+|---|---|---|---|
+| `claude` | Claude Code | `~/.claude/skills/patman` (`$CLAUDE_CONFIG_DIR` honoured) | `DIR/.claude/skills/patman` |
+| `agents` | Codex, Gemini CLI, GitHub Copilot, Cursor, OpenCode | `~/.agents/skills/patman` | `DIR/.agents/skills/patman` |
+
+`.agents/skills` is the open-standard location most harnesses now share, so patman
+writes there rather than into each tool's own directory (`~/.gemini/skills`,
+`~/.cursor/skills`, ...). Extra copies would only show up twice in tools that scan
+several directories. Cursor and OpenCode read `~/.claude/skills` as well, so they may
+list the skill twice already.
+
+```sh
+patman init                          # each directory a harness found here reads
+patman init --agent gemini           # only .agents (tool names alias it; repeatable)
+patman init --project ~/code/repo    # both, into a repo, to commit
+```
+
+A harness counts as found when its config directory (`~/.claude`, `~/.codex`,
+`~/.gemini`, `~/.copilot`, `~/.cursor`, `~/.config/opencode`) exists, its env var
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) is set, or its binary is on `PATH`. Re-run after
+upgrading patman; `patman doctor` reports a stale copy.
+
+### 2. Symlink from a checkout (while editing the skill)
 
 ```sh
 ./install-skill.sh                 # symlinks skills/patman -> ~/.claude/skills/patman
-./install-skill.sh --copy          # copy instead, if this checkout may move
 ./install-skill.sh --uninstall
 ```
 
-A symlink means `git pull` here updates the installed skill. `CLAUDE_CONFIG_DIR` is
-honoured if set.
-
-### 2. Project-scoped (checked into a repo, shared with the team)
-
-```sh
-./install-skill.sh --project                    # into ./.claude/skills/patman
-./install-skill.sh --project ~/code/other-repo  # into another repo
-```
-
-Use `--copy` for this one if the result is meant to be committed — a symlink pointing at
-someone else's home directory does not travel.
+A symlink means edits here take effect without a rebuild. `patman init` sees the link
+and leaves it alone.
 
 ### 3. As a plugin (`/plugin`, kept up to date by Claude Code)
 
@@ -51,6 +65,14 @@ A local clone works too: `/plugin marketplace add /path/to/patman`.
 
 Add a `"repository"` field to `.claude-plugin/plugin.json` once the repo has a canonical
 URL.
+
+## The guard
+
+`patman init` also registers a guard with each harness it finds, so a tool call that
+reads, lists, or writes `~/.pat/` is refused before it runs, whatever the skill says. The
+README's "AI coding agents" section lists the file each harness gets. `--no-guard` skips
+it, `patman init --remove` undoes both, and `--project` installs the skill only: a
+committed hook would make every teammate's harness depend on having patman.
 
 ## Checking it works
 

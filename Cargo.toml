@@ -11,11 +11,12 @@ repository = "https://github.com/darwinsubramaniam/patman"
 homepage = "https://github.com/darwinsubramaniam/patman"
 keywords = ["pat", "token", "secrets", "credentials", "cli"]
 categories = ["command-line-utilities", "authentication"]
-# Everything the crate needs to build and nothing else: the devcontainer, the
-# Claude Code skill, and editor config are repo furniture, not package contents.
+# Everything the crate needs to build and nothing else: the devcontainer and
+# editor config are repo furniture, not package contents. The skill is included
+# because `patman init` embeds it with include_str!.
 # Leading slashes matter: include globs are gitignore-style, so a bare
 # "README.md" would also sweep in skills/README.md and packaging/*/README.md.
-include = ["/src/**/*.rs", "/build.rs", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
+include = ["/src/**/*.rs", "/build.rs", "/skills/patman/SKILL.md", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
 
 # Lets `cargo binstall patman` pull the prebuilt binary from a GitHub release
 # instead of compiling. Must stay in step with the archive naming in
@@ -35,7 +36,9 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.154"
+# preserve_order: patman merges its guard into harness settings files the user
+# owns, and must not reshuffle their keys while doing it.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 rpassword = "7.5.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Sealed token files. Only the raw KDF is wanted from argon2 — the

@@ -35,13 +35,27 @@ request, and nowhere else. Two places carry most of the weight:
 Anything that would give a token value a path to stdout is a bug, not a missing
 feature. There is deliberately no `patman show`.
 
-## The Claude Code skill
+## The agent skill
 
-The skill lives in `skills/patman/`. Install it into a harness with:
+The skill lives in `skills/patman/SKILL.md` and is compiled into the binary
+(`src/skill.rs`, via `include_str!`), so `patman init` installs the copy that matches
+the CLI into `~/.claude/skills/` (Claude Code) and `~/.agents/skills/` (Codex, Gemini
+CLI, Copilot, Cursor, OpenCode). Harness detection is `src/harness.rs`.
+
+`init` also registers the `~/.pat` guard: `src/guardrail.rs` merges it into each
+harness's config, and `src/hook.rs` is `patman hook <harness>`, the check those configs
+run before every tool call. Try the hook by piping it a tool call:
 
 ```sh
-./install-skill.sh              # ~/.claude/skills/patman (symlink)
-./install-skill.sh --project    # ./.claude/skills/patman
+echo '{"tool_name":"Bash","tool_input":{"command":"cat ~/.pat/x"}}' | patman hook claude
+``` Edit
+the file, rebuild, re-run `patman init`.
+
+While iterating on the skill, a symlink saves the rebuild — `patman init` leaves a
+symlinked install alone:
+
+```sh
+./install-skill.sh              # ~/.claude/skills/patman -> skills/patman
 ./install-skill.sh --uninstall
 ```
 

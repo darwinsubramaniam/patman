@@ -26,12 +26,16 @@ curl -u "user:$(cat ~/.pat/x)" ...
 echo $PAT_TOKEN                   # inside patman exec
 ```
 
-Also never use the Read tool on a file under `~/.pat/` other than `manifest.json`.
+Do not touch `~/.pat/` directly at all: no Read, Grep, Glob, `ls`, or `cat` on it, the
+manifest included. Get metadata from `patman list --json` and `patman lookup <service> --json`.
 Once a token is in the transcript it is disclosed: it is in the session history, in any
 context that gets summarized, and in anything the user shares. Rotating it is then the
 only remedy.
 
-`~/.pat/manifest.json`, by contrast, holds no secrets and is safe to read.
+`patman init` installs a guard in each harness that refuses tool calls touching `~/.pat/`.
+If a call is refused with **"patman guard: this touches ~/.pat/"**, that is the rule above
+being enforced: switch to the patman command that does the job, and do not try to word the
+call around the guard.
 
 ## Division of labour
 
@@ -219,7 +223,8 @@ Debug the request itself with `-sS -w '\n%{http_code}\n'` and by echoing the res
 command -v patman || cargo install --path .    # from a checkout of this repo
 ```
 
-Then `patman init` (idempotent) creates `$HOME/.pat/` and an empty manifest. Every command
-runs that preflight anyway, so `init` is only needed to see where things live.
+Then `patman init` (idempotent) creates `$HOME/.pat/` and an empty manifest, and installs
+this skill and the `~/.pat/` guard for the AI harnesses it finds. Every command runs the `$HOME/.pat/` preflight
+anyway; re-run `init` after upgrading patman to refresh the skill.
 
 Full flag reference for any subcommand: `patman <subcommand> --help`.

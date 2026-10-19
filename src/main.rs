@@ -12,11 +12,15 @@ mod approve;
 mod cmds;
 mod error;
 mod guard;
+mod guardrail;
+mod harness;
+mod hook;
 mod manifest;
 mod paths;
 mod policy;
 mod sealed;
 mod secure;
+mod skill;
 mod token;
 #[cfg(feature = "tui")]
 mod tui;
@@ -43,8 +47,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create $HOME/.pat/ and an empty manifest (safe to re-run).
-    Init,
+    /// Create $HOME/.pat/ and an empty manifest, and install the patman skill
+    /// for the AI coding harnesses found: ~/.claude/skills for Claude Code,
+    /// ~/.agents/skills for Codex, Gemini CLI, Copilot, Cursor, and OpenCode.
+    /// Safe to re-run: it also refreshes a skill left stale by an upgrade.
+    Init {
+        /// Install into this skills directory only (repeatable): `claude`, or
+        /// `agents` (also accepted as codex, gemini, copilot, cursor, opencode).
+        /// Default: each one a detected harness reads, or both with --project.
+        #[arg(long = "agent", value_enum, hide_possible_values = true)]
+        agents: Vec<skill::Target>,
+
+        /// Install into a repository (DIR/.claude/skills, DIR/.agents/skills)
+        /// instead of your home directory, for committing alongside the code.
+        /// DIR defaults to the current directory.
+        #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = ".")]
+        project: Option<std::path::PathBuf>,
+
+        /// Set up $HOME/.pat/ only: no skill, no guard.
+        #[arg(long, conflicts_with_all = ["agents", "project"])]
+        no_skill: bool,
+
+        /// Install the skill but leave every harness's settings alone (no
+        /// guard against agents reading ~/.pat/).
+        #[arg(long)]
+        no_guard: bool,
+
+        /// Take the skill and the guard back out of every harness.
+        #[arg(long, conflicts_with_all = ["project", "no_skill", "no_guard"])]
+        remove: bool,
+    },
 
     /// List every recorded PAT with its description. Never shows token values.
     List {
@@ -221,6 +253,16 @@ enum Cmd {
     #[cfg(feature = "tui")]
     Tui,
 
+    /// The pre-tool-use guard a harness runs; installed by `patman init`.
+    ///
+    /// Reads the harness's tool-call JSON on stdin and refuses any call that
+    /// touches ~/.pat/, in that harness's response format.
+    #[command(hide = true)]
+    Hook {
+        #[arg(value_enum)]
+        harness: harness::Harness,
+    },
+
     /// The unlock agent itself. Started by `patman unlock`; not for direct use.
     ///
     /// Reads the vault key from stdin — never argv, which is world-readable via
@@ -250,12 +292,36 @@ fn main() {
 fn run() -> error::Result<()> {
     let cli = Cli::parse();
 
+    // The guard runs before every tool call an agent makes. It skips the
+    // preflight: a failing preflight must not turn into a blocked tool call,
+    // and it has no business creating ~/.pat/ either.
+    if let Cmd::Hook { harness } = cli.command {
+        hook::run(harness);
+        return Ok(());
+    }
+
     // Preflight before every command, including the read-only ones: it is cheap,
     // idempotent, and means no code path can operate on an unchecked directory.
     let ctx = cmds::bootstrap()?;
 
     match cli.command {
-        Cmd::Init => cmds::init(&ctx),
+        Cmd::Init {
+            agents,
+            project,
+            no_skill,
+            no_guard,
+            remove,
+        } => cmds::init(
+            &ctx,
+            cmds::InitOpts {
+                agents: &agents,
+                project: project.as_deref(),
+                skill: !no_skill,
+                guard: !no_guard,
+                remove,
+            },
+        ),
+        Cmd::Hook { .. } => unreachable!("handled before the preflight"),
         Cmd::List { json } => cmds::list(&ctx, json),
         Cmd::Lookup { service, json } => cmds::lookup(&ctx, &service, json),
         Cmd::Search { keyword } => cmds::search(&ctx, &keyword),

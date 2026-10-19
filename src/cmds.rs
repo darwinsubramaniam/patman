@@ -6,11 +6,14 @@ use std::process::{Command, Stdio};
 
 use crate::error::{Context, Result, bail};
 use crate::guard;
+use crate::guardrail;
+use crate::harness;
 use crate::manifest::{Approval, Entry, Manifest, today};
 use crate::paths;
 use crate::policy;
 use crate::sealed;
 use crate::secure;
+use crate::skill;
 use crate::token;
 use crate::usage;
 use crate::vault;
@@ -49,10 +52,160 @@ pub fn bootstrap() -> Result<Ctx> {
     Ok(Ctx { dir, manifest_path })
 }
 
-pub fn init(ctx: &Ctx) -> Result<()> {
+pub struct InitOpts<'a> {
+    pub agents: &'a [skill::Target],
+    pub project: Option<&'a std::path::Path>,
+    pub skill: bool,
+    pub guard: bool,
+    pub remove: bool,
+}
+
+pub fn init(ctx: &Ctx, o: InitOpts) -> Result<()> {
+    if o.remove {
+        return remove_integrations();
+    }
     println!("Ready: {}", ctx.dir.display());
     println!("Manifest: {}", ctx.manifest_path.display());
+
+    if o.skill {
+        // A home directory only needs the targets this user's harnesses read;
+        // a repo is shared, and its teammates may use any of them.
+        let targets: Vec<(skill::Target, Vec<&str>)> = skill::ALL
+            .into_iter()
+            .filter_map(|t| {
+                let named = o.agents.contains(&t);
+                let used_by = if named || o.project.is_some() {
+                    t.serves()
+                } else {
+                    t.found()
+                };
+                let wanted = if o.agents.is_empty() {
+                    !used_by.is_empty()
+                } else {
+                    named
+                };
+                wanted.then_some((t, used_by))
+            })
+            .collect();
+
+        println!();
+        if targets.is_empty() {
+            println!(
+                "Skill: no AI harness found (looked for {}).",
+                harness::ALL.map(|h| h.label()).join(", ")
+            );
+            println!("       Install it anyway with: patman init --agent claude|agents");
+        }
+        for (t, used_by) in targets {
+            let dir = t.skills_dir(o.project)?;
+            let at = dir.join("patman");
+            let what = match skill::install(&dir)? {
+                skill::Outcome::Installed => "installed",
+                skill::Outcome::Updated => "updated",
+                skill::Outcome::UpToDate => "up to date",
+                skill::Outcome::Linked(target) => {
+                    println!(
+                        "Skill: {} links to {}, left as is",
+                        at.display(),
+                        target.display()
+                    );
+                    continue;
+                }
+            };
+            println!(
+                "Skill: {what} at {} (for {})",
+                at.display(),
+                used_by.join(", ")
+            );
+        }
+
+        if o.guard {
+            install_guards(o.agents, o.project.is_some())?;
+        }
+        println!("Start a new agent session to pick the changes up.");
+    }
+
     println!("\nStore your first token with:  patman save <service> -d \"what it's for\"");
+    Ok(())
+}
+
+/// Register the `~/.pat` guard with every detected harness (narrowed to the
+/// `--agent` targets, if any were named).
+fn install_guards(agents: &[skill::Target], project: bool) -> Result<()> {
+    println!();
+    if project {
+        // A committed hook would make every teammate's harness call a patman
+        // binary they may not have. The guard is per machine.
+        println!("Guard: not added to the repo; each user gets it from their own `patman init`.");
+        return Ok(());
+    }
+    let mut codex_changed = false;
+    for h in harness::ALL {
+        let named = agents.is_empty() || agents.iter().any(|t| t.harnesses().contains(&h));
+        if !named || !h.detected() {
+            continue;
+        }
+        let file = guardrail::config_file(h)?;
+        match guardrail::install(h)? {
+            guardrail::Outcome::Changed => {
+                codex_changed |= h == harness::Harness::Codex;
+                println!("Guard ({}): added to {}", h.label(), file.display());
+            }
+            guardrail::Outcome::Unchanged => {
+                println!("Guard ({}): in place in {}", h.label(), file.display());
+            }
+            guardrail::Outcome::Unparseable => println!(
+                "Guard ({}): {} is not plain JSON (comments?), left untouched. \
+                 Add the guard by hand; README.md, \"AI coding agents\", lists what goes where.",
+                h.label(),
+                file.display()
+            ),
+        }
+    }
+    if codex_changed {
+        println!("       Codex runs a new hook only after you review and trust it in /hooks.");
+    }
+    println!(
+        "       The guard blocks agents from reading ~/.pat/ by accident or by casual \
+         prompt injection;\n       it matches paths, so a command built to dodge it can."
+    );
+    if !vault::is_sealed_install() {
+        println!("       For tokens that are useless if read anyway, seal them: patman vault init");
+    }
+    Ok(())
+}
+
+/// Undo `patman init` outside ~/.pat/: the skill and the guard, everywhere.
+fn remove_integrations() -> Result<()> {
+    for t in skill::ALL {
+        let dir = t.skills_dir(None)?;
+        match skill::remove(&dir)? {
+            skill::Removed::Yes => println!("Skill: removed {}", dir.join("patman").display()),
+            skill::Removed::Linked => println!(
+                "Skill: {} is a symlink, left as is (./install-skill.sh --uninstall)",
+                dir.join("patman").display()
+            ),
+            skill::Removed::Absent => {}
+        }
+    }
+    for h in harness::ALL {
+        let file = guardrail::config_file(h)?;
+        if !file.exists() {
+            continue;
+        }
+        match guardrail::remove(h)? {
+            guardrail::Outcome::Changed => {
+                println!("Guard ({}): removed from {}", h.label(), file.display())
+            }
+            guardrail::Outcome::Unchanged => {}
+            guardrail::Outcome::Unparseable => println!(
+                "Guard ({}): {} is not plain JSON, left untouched",
+                h.label(),
+                file.display()
+            ),
+        }
+    }
+    println!("~/.pat/ itself is untouched.");
     Ok(())
 }
 
@@ -644,6 +797,37 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
                 println!("              {b}");
             }
         }
+    }
+
+    for h in harness::ALL {
+        if !h.detected() {
+            continue;
+        }
+        let state = match guardrail::state(h) {
+            Ok(guardrail::State::Installed) => "on".to_string(),
+            Ok(guardrail::State::Missing) => "OFF — add it with: patman init".to_string(),
+            Ok(guardrail::State::Unparseable) => format!(
+                "unknown — {} is not plain JSON",
+                guardrail::config_file(h)?.display()
+            ),
+            Err(e) => format!("unknown — {e}"),
+        };
+        println!("guard:      {} — {state}", h.label());
+    }
+
+    for t in skill::ALL {
+        let found = t.found();
+        if found.is_empty() {
+            continue;
+        }
+        let dir = t.skills_dir(None)?;
+        let state = match skill::state(&dir) {
+            skill::State::Current => "installed, current".to_string(),
+            skill::State::Stale => "STALE — refresh with: patman init".to_string(),
+            skill::State::Missing => "not installed (patman init)".to_string(),
+            skill::State::Linked(t) => format!("linked to {}", t.display()),
+        };
+        println!("skill:      {} ({}) — {state}", t.label(), found.join(", "));
     }
 
     println!();

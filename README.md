@@ -346,11 +346,44 @@ upload in plaintext and survive deletion through version history.
 - **Team use.** No sharing, no rotation automation, no audit log, no expiry
   tracking.
 
-## Claude Code
+## AI coding agents
 
-A skill ships in `skills/patman/`, so an agent working in your terminal knows to
-authenticate through patman instead of reading the files. Install it with
-`./install-skill.sh`.
+patman ships a skill that teaches an agent working in your terminal to authenticate
+through patman instead of reading token files. `patman init` installs it for the
+harnesses it finds. Two directories cover them all: `~/.claude/skills` for Claude Code,
+and the shared `~/.agents/skills` for Codex, Gemini CLI, GitHub Copilot, Cursor, and
+OpenCode.
+
+```sh
+patman init                      # whichever of the two your harnesses read
+patman init --agent agents       # just one (repeatable: claude, agents; codex,
+                                 # gemini, copilot, cursor, opencode mean agents)
+patman init --project            # ./.claude/skills and ./.agents/skills, to commit
+patman init --no-skill           # set up ~/.pat only
+```
+
+`init` also installs a **guard** in each harness it finds. Before every tool call, the
+harness checks with patman, which refuses any call that reads, lists, or writes `~/.pat/`:
+
+| Harness | Guard | Written to |
+|---|---|---|
+| Claude Code | `Read`/`Edit` deny rules, plus a hook for shell commands | `~/.claude/settings.json` |
+| Codex | `PreToolUse` hook (trust it once in `/hooks`) | `~/.codex/hooks.json` |
+| Gemini CLI | `BeforeTool` hook | `~/.gemini/settings.json` |
+| GitHub Copilot | `preToolUse` hook | `~/.copilot/hooks/patman.json` |
+| Cursor | `preToolUse` and `beforeReadFile` hooks | `~/.cursor/hooks.json` |
+| OpenCode | `permission` deny rules (no hook) | `~/.config/opencode/opencode.json` |
+
+Each edit is merged into the file you already have, other settings untouched, with the
+previous version kept as `<file>.patman-backup`. `patman init --no-guard` skips the guard,
+and `patman init --remove` takes the skill and the guard back out.
+
+The guard matches paths, so it stops an agent that is careless or casually
+prompt-injected, not one running a command built to dodge it. To make a token file
+useless even when it is read, [seal them](#encrypting-tokens-at-rest).
+
+The skill and guard are built into the binary, so after upgrading patman, re-run
+`patman init` to refresh them; `patman doctor` reports a stale skill or a missing guard.
 
 ## Dev
 
