@@ -63,8 +63,9 @@ patman curl github -- -sS https://api.github.com/user
 ## Saving a token
 
 Run this yourself in a real terminal. It prompts with echo off and refuses to run
-without a TTY, so a token is never typed into a tool call. In Claude Code, prefix
-the command with `!`.
+without a TTY, so a token is never typed into a tool call. Using Claude Code? Run
+it in a separate terminal window — the `!` prefix runs commands without a terminal,
+so the prompt cannot appear there.
 
 ```sh
 patman save github -d "personal account, repo + read:org scopes" -u darwin
@@ -191,8 +192,8 @@ patman: no terminal available to read the vault passphrase.
 The vault is locked and unlocking needs masked input, which an agent's tool call
 cannot provide.
 
-Run it yourself — in Claude Code prefix it with `!`:
-    !patman unlock
+Run it yourself in a terminal window (not Claude Code's `!` prefix, which has no terminal to prompt on):
+    patman unlock
 ```
 
 Metadata stays readable throughout: `list`, `lookup`, `search`, `status` and
@@ -214,7 +215,7 @@ Then, even inside an open session, every `patman curl github ...` waits for you:
   https://api.github.com/repos/... with body ...*
 - **Linux / other unix** — the command shows the request and asks for the vault
   passphrase. From an agent's tool call, with no terminal, it is refused with
-  instructions to run it yourself with `!`.
+  instructions to run it yourself in a terminal window.
 
 Leave low-risk tokens on the default, `--approval session`. Mixing the two is the
 point: a read-only token runs unattended, while a write token needs you.

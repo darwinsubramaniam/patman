@@ -415,7 +415,8 @@ pub fn describe(ctx: &Ctx, service: &str, edits: Edits) -> Result<()> {
     } else {
         if approval.is_some() || sign {
             return bail(
-                "approval modes and policy signing only apply to a sealed vault —                  run: patman vault init",
+                "approval modes and policy signing only apply to a sealed vault — \
+                 run: patman vault init",
             );
         }
         entry.policy_seal = None;
@@ -435,9 +436,12 @@ pub fn describe(ctx: &Ctx, service: &str, edits: Edits) -> Result<()> {
 fn passphrase_for_policy(service: &str) -> Result<sealed::Key> {
     if !vault::has_tty() {
         return bail(format!(
-            "changing how {service:?} may be used (hosts, username, exec, approval)              needs the vault passphrase under a sealed vault, and there is no terminal              to type it on.
-             Run it yourself — in Claude Code prefix it with `!`:
-                 !patman describe {service} ..."
+            "changing how {service:?} may be used (hosts, username, exec, approval) \
+             needs the vault passphrase under a sealed vault, and there is no terminal \
+             to type it on.\n\
+             Run it yourself in a terminal window (Claude Code's `!` prefix has no \
+             terminal for the passphrase prompt):\n\
+             \x20   patman describe {service} ..."
         ));
     }
     let v = vault::load()?;

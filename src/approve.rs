@@ -125,7 +125,8 @@ pub fn approve(what: &str, passphrase: Option<&str>) -> Result<()> {
     bail(format!(
         "this service needs approval for every request, and none was given.\n\
          Approving takes the vault passphrase, which an agent's tool call cannot \
-         supply. Run the command yourself — in Claude Code prefix it with `!`.\n\
+         supply. Run the command yourself in a terminal window (not Claude Code's `!` \
+         prefix, which has no terminal to prompt on).\n\
          (Request: {what})"
     ))
 }
@@ -149,8 +150,8 @@ fn touch_id(what: &str) -> Result<()> {
     if let Err(e) = unsafe { ctx.canEvaluatePolicy_error(policy) } {
         return bail(format!(
             "Touch ID / password approval is not available here ({}).\n\
-             Run the command yourself so you can type the vault passphrase — in \
-             Claude Code prefix it with `!`.",
+             Run the command yourself in a terminal window so you can type the vault \
+             passphrase (Claude Code's `!` prefix has no terminal to prompt on).",
             e.localizedDescription()
         ));
     }

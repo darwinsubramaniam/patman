@@ -63,8 +63,8 @@ enum Cmd {
 
     /// Store or rotate a token value. Prompts on the terminal with echo off.
     ///
-    /// Must be run by you, in a real terminal — in Claude Code, prefix it with
-    /// `!`. It refuses to run without a TTY so a token can never be typed into,
+    /// Must be run by you, in a real terminal window — Claude Code's `!` prefix
+    /// has no terminal to prompt on. It refuses to run without a TTY so a token can never be typed into,
     /// or echoed by, an agent's tool call.
     Save {
         service: String,
@@ -196,8 +196,8 @@ enum Cmd {
     /// Start an unlock session: hold the vault key in memory so `patman curl`
     /// works without a passphrase until it expires.
     ///
-    /// Must be run by you, in a real terminal — in Claude Code, prefix it with
-    /// `!`. This is the gate: an agent can spend a credential during a session
+    /// Must be run by you, in a real terminal window — Claude Code's `!` prefix
+    /// has no terminal to prompt on. This is the gate: an agent can spend a credential during a session
     /// you opened, and cannot open one itself.
     Unlock {
         /// How long the session lasts, in minutes.

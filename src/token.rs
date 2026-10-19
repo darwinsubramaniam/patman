@@ -70,8 +70,8 @@ pub fn read(service: &str, key: Option<&sealed::Key>) -> Result<Secret> {
                 "the token for {service:?} is sealed and the vault is locked.\n\n\
                  Unlocking needs your passphrase, which an agent's tool call cannot \
                  supply.\n\n\
-                 Run it yourself — in Claude Code prefix it with `!`:\n\
-                 \x20   !patman unlock"
+                 Run it yourself in a terminal window (not Claude Code's `!` prefix, which has no terminal to prompt on):\n\
+                 \x20   patman unlock"
             ));
         };
         sealed::open(key, service, &raw)?
@@ -163,8 +163,8 @@ pub fn prompt(service: &str, source: Source) -> Result<Secret> {
                      Secret entry is yours to run, not an agent's: masked input needs a real \
                      interactive session, and anything a tool call prints lands in the \
                      transcript.\n\n\
-                     Run it yourself — in Claude Code prefix it with `!`:\n\
-                     \x20   !patman save {service}\n\n\
+                     Run it yourself in a terminal window (not Claude Code's `!` prefix, which has no terminal to prompt on):\n\
+                     \x20   patman save {service}\n\n\
                      To pipe from a password manager instead, pass --stdin explicitly."
                 ));
             }

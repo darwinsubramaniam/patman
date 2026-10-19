@@ -56,4 +56,4 @@ URL.
 
 Start a fresh session and run `/doctor`, or just ask for something that needs a token —
 "list my open Jira issues". The agent should reach for `patman list` first and then
-`patman curl`, and should ask *you* to run `!patman save <service>` if nothing is recorded.
+`patman curl`, and should ask *you* to run `patman save <service>` in a terminal if nothing is recorded.

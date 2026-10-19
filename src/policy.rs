@@ -88,16 +88,16 @@ pub fn verify(key: &Key, manifest: &Manifest, service: &str) -> Result<()> {
         return bail(format!(
             "{service:?} has no manifest entry, and under a sealed vault a token is \
              only spent under a signed policy.\n\
-             Describe it yourself (needs the passphrase) — in Claude Code prefix it with `!`:\n\
-             \x20   !patman describe {service} -d \"...\" --host api.example.com"
+             Describe it yourself (it needs the passphrase) in a terminal window (not Claude Code's `!` prefix, which has no terminal to prompt on):\n\
+             \x20   patman describe {service} -d \"...\" --host api.example.com"
         ));
     };
     let Some(hex) = &entry.policy_seal else {
         return bail(format!(
             "the policy for {service:?} is not signed, so it cannot be trusted under a \
              sealed vault.\n\
-             Sign it yourself (needs the passphrase) — in Claude Code prefix it with `!`:\n\
-             \x20   !patman describe {service} --sign"
+             Sign it yourself (it needs the passphrase) in a terminal window (not Claude Code's `!` prefix, which has no terminal to prompt on):\n\
+             \x20   patman describe {service} --sign"
         ));
     };
     let ok = sealed::from_hex(hex)
@@ -108,8 +108,8 @@ pub fn verify(key: &Key, manifest: &Manifest, service: &str) -> Result<()> {
         return bail(format!(
             "the policy for {service:?} has been changed without the vault passphrase \
              (hosts, username, exec or approval differ from what was signed) — refusing.\n\
-             If you made the change, re-sign it — in Claude Code prefix it with `!`:\n\
-             \x20   !patman describe {service} --sign"
+             If you made the change, re-sign it in a terminal window (not Claude Code's `!` prefix, which has no terminal to prompt on):\n\
+             \x20   patman describe {service} --sign"
         ));
     }
     Ok(())

@@ -136,7 +136,7 @@ Three details matter:
   flag blocklist would refuse is refused without asking anyone.
 
 With no terminal and no Touch ID — an agent's tool call on Linux — a `request`
-service fails with instructions to run the command with `!`. That is the design:
+service fails with instructions to run the command in a terminal window. That is the design:
 the agent proposes, the human runs.
 
 `PATMAN_NO_TOUCHID=1` in the environment of `patman unlock` makes the agent use

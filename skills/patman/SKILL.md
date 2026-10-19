@@ -47,10 +47,12 @@ only remedy.
 
 `patman save` refuses to run without a TTY, on purpose: masked input needs a real
 interactive session, and anything a tool call prints lands in the transcript. Do not try
-to work around it. Ask the user to run it themselves — in Claude Code, prefixed with `!`:
+to work around it. Ask the user to run it themselves **in a separate terminal window**. Do not suggest the
+`!` prefix: it runs commands without a terminal, so every passphrase or token prompt fails
+there with "no terminal available".
 
 ```
-!patman save jira -d "Atlassian Cloud, read:jira-work" -u alice@example.com --host acme.atlassian.net
+patman save jira -d "Atlassian Cloud, read:jira-work" -u alice@example.com --host acme.atlassian.net
 ```
 
 ## Sealed vaults and unlock sessions
@@ -68,7 +70,7 @@ vault:   unlocked, 12m04s remaining                # curl/exec work normally
 there is no way to, by design, and attempting one wastes a turn:
 
 ```
-!patman unlock --minutes 30
+patman unlock --minutes 30
 ```
 
 While unlocked, `patman curl` and `patman exec` work exactly as documented below, with no
@@ -82,7 +84,7 @@ What stays true whether or not a vault exists: `list`, `lookup`, `search`, `stat
 Under a sealed vault, `patman exec` is **refused unless the service opts in**, because
 exec skips host pinning and argument vetting. If you get "`patman exec` is not enabled",
 prefer rewriting the call as `patman curl`. Only if that is genuinely impossible, propose
-`!patman describe <service> --allow-exec` to the user and explain what it gives up.
+`patman describe <service> --allow-exec` (in their terminal) to the user and explain what it gives up.
 
 ### Per-request approval
 
@@ -94,7 +96,7 @@ those, an open session is not enough: every call needs the user's approval.
   not be watching the screen. If they decline, you get "not approved" — **do not retry
   the same call**; ask what they want instead.
 - **Elsewhere:** the call fails with "needs approval for every request". Give the user
-  the full command to run themselves with `!`, so they can see the request and type the
+  the full command to run themselves in a terminal window, so they can see the request and type the
   passphrase.
 
 Make each request worth approving: one call that does the job, with a body the user can
@@ -118,7 +120,7 @@ patman search atlassian           # find a PAT by what it is used for
 patman lookup jira --json         # one service: path, username, pinned hosts, updated
 ```
 
-If the service is not recorded, stop and ask the user to `!patman save <service>`. Give
+If the service is not recorded, stop and ask the user to run `patman save <service>` in a terminal. Give
 them the full command including a suggested `-d` description and `--host` pin.
 
 **2. Make the request with `patman curl`.** Everything after `--` is passed to curl; the
@@ -188,11 +190,11 @@ scanned character by character, so `-dv` reads as a hidden `-v`.
 Instead:
 
 - **401/403** — the token is likely expired or under-scoped. Ask the user to
-  `!patman rotate <service>` (keeps the description), or to check the scopes at the
+  `patman rotate <service>` in a terminal (keeps the description), or to check the scopes at the
   issuing service. Check `patman lookup <service>` for the recorded `updated` date.
 - **"host X is not on the allowed list"** — intended behaviour. Confirm the host is right,
   then propose the `patman describe --host` command.
-- **"the vault is locked"** — ask the user to `!patman unlock`. Not a token problem; the
+- **"the vault is locked"** — ask the user to run `patman unlock` in a terminal. Not a token problem; the
   credential is fine, the session has expired or never started.
 - **"`patman exec` is not enabled"** — rewrite the call as `patman curl` if you can; see
   the sealed-vault section above before proposing `--allow-exec`.
@@ -200,9 +202,9 @@ Instead:
   see above. Do not retry in a loop.
 - **"the policy for X has been changed without the vault passphrase"** or **"is not
   signed"** — something edited the manifest. Do not re-sign it yourself (you can't); tell
-  the user, who should check `patman lookup X` and then `!patman describe X --sign` if the
+  the user, who should check `patman lookup X` and then run `patman describe X --sign` in a terminal if the
   change was theirs.
-- **"no token file for X"** or `[FILE MISSING]` in `list` — ask the user to `!patman save X`.
+- **"no token file for X"** or `[FILE MISSING]` in `list` — ask the user to run `patman save X` in a terminal.
 - **"contains control characters" / "is empty"** — the file was saved wrong. Ask the user
   to re-save.
 - Anything odd about permissions or stray files: `patman doctor`, then `patman fix-perms`.

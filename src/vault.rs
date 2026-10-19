@@ -172,8 +172,8 @@ pub fn prompt_passphrase(prompt: &str) -> Result<String> {
             "no terminal available to read the vault passphrase.\n\n\
              The vault is locked and unlocking needs masked input, which an agent's \
              tool call cannot provide.\n\n\
-             Run it yourself — in Claude Code prefix it with `!`:\n\
-             \x20   !patman unlock",
+             Run it yourself in a terminal window (not Claude Code's `!` prefix, which has no terminal to prompt on):\n\
+             \x20   patman unlock",
         );
     }
     let pass = rpassword::prompt_password(prompt).ctx("reading the passphrase")?;

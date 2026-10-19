@@ -373,7 +373,10 @@ fn handle(conn: UnixStream, key: &Key, deadline: Instant, sock: &std::path::Path
     };
 
     if Instant::now() > deadline {
-        return fail(&out, "the unlock session has expired — run: !patman unlock");
+        return fail(
+            &out,
+            "the unlock session has expired — run `patman unlock` in a terminal window",
+        );
     }
 
     match req {
