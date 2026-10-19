@@ -7,11 +7,14 @@
 
 #[cfg(unix)]
 mod agent;
+#[cfg(unix)]
+mod approve;
 mod cmds;
 mod error;
 mod guard;
 mod manifest;
 mod paths;
+mod policy;
 mod sealed;
 mod secure;
 mod token;
@@ -121,6 +124,17 @@ enum Cmd {
         /// Withdraw `--allow-exec`.
         #[arg(long, conflicts_with = "allow_exec")]
         deny_exec: bool,
+
+        /// Sealed vault only: `session` lets an open unlock session spend this
+        /// token unattended; `request` makes every use need its own approval
+        /// (Touch ID on macOS, the vault passphrase elsewhere).
+        #[arg(long, value_enum)]
+        approval: Option<manifest::Approval>,
+
+        /// Re-sign this service's policy with the vault passphrase — after
+        /// editing manifest.json by hand, or for an entry with no signature.
+        #[arg(long)]
+        sign: bool,
     },
 
     /// Delete a token file and its manifest entry. Requires --yes.
@@ -254,6 +268,8 @@ fn run() -> error::Result<()> {
             clear_hosts,
             allow_exec,
             deny_exec,
+            approval,
+            sign,
         } => cmds::describe(
             &ctx,
             &service,
@@ -269,6 +285,8 @@ fn run() -> error::Result<()> {
                     (_, true) => Some(false),
                     _ => None,
                 },
+                approval,
+                sign,
             },
         ),
 

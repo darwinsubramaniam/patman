@@ -38,10 +38,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Context, Error, Result, bail};
-use crate::manifest::Manifest;
+use crate::manifest::{Approval, Manifest};
 use crate::sealed::Key;
 use crate::usage::{self, Auth};
-use crate::{paths, secure, token};
+use crate::{approve, paths, policy, secure, token};
 
 // Response frame kinds.
 const F_STDOUT: u8 = 1;
@@ -68,9 +68,19 @@ pub enum Request {
         service: String,
         auth: Auth,
         args: Vec<String>,
+        /// The vault passphrase, typed by the human for this one request — how
+        /// a `--approval request` service is approved where there is no Touch
+        /// ID. Checked against the vault, never stored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<String>,
     },
     /// Run an arbitrary program with `PAT_TOKEN` in its environment.
-    Exec { service: String, args: Vec<String> },
+    Exec {
+        service: String,
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<String>,
+    },
 }
 
 /// `sockaddr_un.sun_path` is 104 bytes on macOS and 108 on Linux, and binding a
@@ -385,11 +395,16 @@ fn handle(conn: UnixStream, key: &Key, deadline: Instant, sock: &std::path::Path
             service,
             auth,
             args,
-        } => match run_curl(&out, key, &service, auth, &args) {
+            approval,
+        } => match run_curl(&out, key, &service, auth, &args, approval.as_deref()) {
             Ok(code) => exit(&out, code),
             Err(e) => fail(&out, &e.0),
         },
-        Request::Exec { service, args } => match run_exec(&out, key, &service, &args) {
+        Request::Exec {
+            service,
+            args,
+            approval,
+        } => match run_exec(&out, key, &service, &args, approval.as_deref()) {
             Ok(code) => exit(&out, code),
             Err(e) => fail(&out, &e.0),
         },
@@ -419,15 +434,30 @@ fn exit(out: &Out, code: i32) -> Result<()> {
 
 /// Authorize, decrypt, spawn curl, stream. The token exists only between
 /// `token::read` and the `drop` a few lines later, and only in this process.
-fn run_curl(out: &Out, key: &Key, service: &str, auth: Auth, args: &[String]) -> Result<i32> {
+///
+/// The order is deliberate: the policy is proven unmodified, then the request is
+/// checked against it, and only a request that would be allowed is put to the
+/// human — nobody should be asked to approve something that will be refused.
+fn run_curl(
+    out: &Out,
+    key: &Key,
+    service: &str,
+    auth: Auth,
+    args: &[String],
+    approval: Option<&str>,
+) -> Result<i32> {
     paths::validate_service(service)?;
     let manifest = Manifest::load(&paths::manifest_path()?)?;
+    policy::verify(key, &manifest, service)?;
     let plan = usage::plan(&manifest, service, auth);
 
     // Authorization happens here, in the process holding the key — a client that
     // skipped the patman binary entirely still cannot get past this.
     if let Some(warning) = usage::authorize_curl(service, args, &plan)? {
         frame(out, F_STDERR, format!("patman: {warning}\n").as_bytes())?;
+    }
+    if plan.approval == Approval::Request {
+        approve::approve(&approve::describe_curl(service, args), approval)?;
     }
 
     let secret = token::read(service, Some(key))?;
@@ -448,15 +478,25 @@ fn run_curl(out: &Out, key: &Key, service: &str, auth: Auth, args: &[String]) ->
     pump(out, &mut child)
 }
 
-fn run_exec(out: &Out, key: &Key, service: &str, args: &[String]) -> Result<i32> {
+fn run_exec(
+    out: &Out,
+    key: &Key,
+    service: &str,
+    args: &[String],
+    approval: Option<&str>,
+) -> Result<i32> {
     paths::validate_service(service)?;
     let Some((program, rest)) = args.split_first() else {
         return bail("nothing to run — usage: patman exec <service> -- <command> [args...]");
     };
 
     let manifest = Manifest::load(&paths::manifest_path()?)?;
+    policy::verify(key, &manifest, service)?;
     let plan = usage::plan(&manifest, service, Auth::Auto);
     usage::authorize_exec(service, &plan, true)?;
+    if plan.approval == Approval::Request {
+        approve::approve(&approve::describe_exec(service, args), approval)?;
+    }
 
     let secret = token::read(service, Some(key))?;
 
@@ -548,6 +588,7 @@ mod tests {
             service: "jira".into(),
             auth: Auth::Auto,
             args: vec!["-sS".into(), "https://x.atlassian.net/x".into()],
+            approval: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains("\"op\":\"curl\""));

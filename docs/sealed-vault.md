@@ -102,11 +102,92 @@ service. On a plaintext install nothing changes.
 This is the single highest-value change here, and it is independent of the
 crypto. It caps how much the unlock window can be abused.
 
+## Hybrid approval: session or per request
+
+An unlock window is all-or-nothing: while it is open, every sealed token can be
+spent unattended. That is fine for a read-only CI token and too loose for one
+that can push to `main` or move money. So approval is a per-service setting:
+
+```
+patman describe ci-reader --approval session   # default: the window is enough
+patman describe github    --approval request   # every use needs its own yes
+```
+
+For a `request` service, an open session is necessary but not sufficient. The
+unlock agent checks the request against the policy, then asks the human about
+**this one request** before decrypting:
+
+| Platform | How the human approves | Where the prompt appears |
+|---|---|---|
+| macOS | Touch ID, or the login password | System dialog raised by the unlock agent |
+| Linux, other unix | Vault passphrase | The terminal of whoever ran `patman curl` |
+| Windows | Vault passphrase (no session exists, so every use already prompts) | Console |
+
+Three details matter:
+
+- **The daemon writes the prompt.** On macOS the dialog reads *"patman is trying
+  to send your "github" token: POST https://api.github.com/... with body ..."*,
+  built from the actual curl arguments, with control characters replaced so an
+  argument cannot forge a second line. On the passphrase path the client shows
+  the same description before prompting.
+- **No caching.** One approval covers one request. A second call is a second
+  prompt. Prompts are serialised so stacked dialogs cannot be confused.
+- **Authorization runs before approval.** A request that host pinning or the
+  flag blocklist would refuse is refused without asking anyone.
+
+With no terminal and no Touch ID — an agent's tool call on Linux — a `request`
+service fails with instructions to run the command with `!`. That is the design:
+the agent proposes, the human runs.
+
+`PATMAN_NO_TOUCHID=1` in the environment of `patman unlock` makes the agent use
+the passphrase path instead of Touch ID (useful over SSH, and for the e2e test).
+It cannot weaken anything: it swaps one human-only approval for another.
+
+The closest thing to "always sealed" is every service on `request` with a long
+unlock window. The key sits in the daemon, but nothing can be spent without a
+fingerprint or passphrase per call.
+
+## Signed policy
+
+Per-service controls are only as strong as the file that holds them. The agent
+runs as the user, so without protection it could run
+`patman describe github --approval session --clear-hosts` (or edit
+`manifest.json` directly) and the unlock agent would obey the weakened rules.
+
+So under a sealed vault each manifest entry carries `policy_seal`: an AEAD seal,
+made with the vault key, over the policy fields — `username`, `hosts`,
+`allow_exec`, `approval` — with the service name bound in. Whoever holds the key
+(the unlock agent, or a passphrase prompt on the locked path) verifies it before
+acting:
+
+- a changed field → refused: *"the policy for "github" has been changed without
+  the vault passphrase"*;
+- no seal, or no manifest entry at all → refused, so deleting an entry is not a
+  way back to the unrestricted defaults;
+- a seal copied from another service → refused (the service name is in the AAD).
+
+Changing a policy field with `describe` therefore prompts for the passphrase, and
+fails without a terminal. A description-only edit keeps the seal and asks for
+nothing. `vault init` and `vault seal` sign every entry as it stands — the human
+typing the passphrase is endorsing the current policy — and
+`patman describe <svc> --sign` re-signs after a deliberate hand edit.
+
+**Not covered: rollback.** An older copy of the manifest carries valid seals for
+its older policy. Restoring it re-arms whatever that policy allowed. Preventing
+that needs a counter the agent cannot write, which a same-user design lacks.
+
 ## What this does not do
 
-- **Does not protect against a compromised agent during an open session.** That
-  is the deliberate tradeoff. The window is the security boundary; shrink it with
-  `--minutes`.
+- **Does not protect against a compromised agent during an open session** for
+  `session` services. That is the deliberate tradeoff. The window is the security
+  boundary; shrink it with `--minutes`, or put the service on `--approval request`.
+- **A per-request approval is only as good as the human reading it.** The prompt
+  shows the method, URL and body; approving without reading it approves anything
+  within the pinned hosts — including a request whose body reflects the token
+  back (a gist, an issue comment).
+- **The Touch ID path has not been run by the e2e script**, which uses
+  `PATMAN_NO_TOUCHID=1` so it can run unattended. Exercise it by hand (see
+  below).
 - **`--allow-exec` hands over the raw token,** by construction. The opt-in makes
   it a decision, not a default.
 - **The TTY check is a speed bump, not a boundary.** `vault::has_tty` proves a
@@ -126,9 +207,9 @@ crypto. It caps how much the unlock window can be abused.
 ## Verifying it
 
 ```
-cargo test                                  # 28 tests
+cargo test                                  # 36 tests
 cargo check --target x86_64-pc-windows-msvc # the Windows path still builds
-tests/manual/e2e.sh                         # 14-step end-to-end exercise
+tests/manual/e2e.sh                         # 16-step end-to-end exercise
 tests/manual/ttl.sh                         # session expiry (takes ~70s)
 tests/manual/stdin_with_tty.py              # piped token + console passphrase
 ```
@@ -137,5 +218,19 @@ The e2e run covers: plaintext still works → seal → token absent from disk �
 locked+no-TTY refuses with instructions → metadata still readable → unlock →
 curl succeeds with the right `Authorization` header → cleartext refused for a
 pinned service → exec refused until opt-in → **a raw socket client is refused a
-non-pinned host** → **a raw socket client cannot ask for the token** → lock →
-refused again, socket cleaned up.
+non-pinned host** → **a raw socket client cannot ask for the token** → **a
+hand-edited policy is refused** → **the agent cannot change exec or approval
+settings** → a `request` service is refused without approval, runs with the
+passphrase, refuses a wrong one, and refuses a raw socket client → a `session`
+service still runs unattended → lock → refused again, socket cleaned up.
+
+Touch ID, by hand on macOS:
+
+```
+patman describe github --approval request    # passphrase, to sign it
+patman unlock --minutes 5
+patman curl github -- -sS https://api.github.com/user   # dialog shows the request
+```
+
+Approve once (works), cancel once (refused), and run it from a tool call with no
+terminal (the dialog still appears — that is the out-of-band part).

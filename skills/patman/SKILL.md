@@ -39,7 +39,7 @@ only remedy.
 |---|---|
 | `list`, `lookup`, `search`, `orphans`, `doctor` | agent, freely |
 | `curl`, `exec` | agent — this is how requests get made |
-| `describe` (metadata, host pinning) | agent, after proposing it to the user |
+| `describe` (metadata, host pinning) | agent, after proposing it to the user — **user only** under a sealed vault for hosts, username, `--allow-exec`, `--approval` (passphrase) |
 | `save`, `rotate` | **user only** |
 | `unlock`, `vault init`, `vault seal` | **user only** (passphrase entry) |
 | `status`, `lock` | agent, freely |
@@ -82,8 +82,30 @@ What stays true whether or not a vault exists: `list`, `lookup`, `search`, `stat
 Under a sealed vault, `patman exec` is **refused unless the service opts in**, because
 exec skips host pinning and argument vetting. If you get "`patman exec` is not enabled",
 prefer rewriting the call as `patman curl`. Only if that is genuinely impossible, propose
-`patman describe <service> --allow-exec` to the user and explain what it gives up — do not
-run it silently to make a command work.
+`!patman describe <service> --allow-exec` to the user and explain what it gives up.
+
+### Per-request approval
+
+Some services are set to `--approval request` (`patman lookup <service>` shows it). For
+those, an open session is not enough: every call needs the user's approval.
+
+- **macOS:** your `patman curl` waits while a Touch ID dialog asks the user to approve
+  the exact request. Tell the user a prompt is waiting and what it is for, since they may
+  not be watching the screen. If they decline, you get "not approved" — **do not retry
+  the same call**; ask what they want instead.
+- **Elsewhere:** the call fails with "needs approval for every request". Give the user
+  the full command to run themselves with `!`, so they can see the request and type the
+  passphrase.
+
+Make each request worth approving: one call that does the job, with a body the user can
+read. Never put token-shaped or opaque data in a body you are asking them to approve.
+
+### Signed policy
+
+Under a sealed vault, hosts, username, `--allow-exec` and `--approval` are signed with the
+vault key. You cannot change them — `describe` asks for the passphrase — and you must
+not edit `manifest.json` to try: the unlock agent refuses any policy that does not match
+its signature. Changing only a description (`-d`) still works for you.
 
 ## Workflow
 
@@ -174,6 +196,12 @@ Instead:
   credential is fine, the session has expired or never started.
 - **"`patman exec` is not enabled"** — rewrite the call as `patman curl` if you can; see
   the sealed-vault section above before proposing `--allow-exec`.
+- **"needs approval for every request"** / **"not approved"** — a per-request service;
+  see above. Do not retry in a loop.
+- **"the policy for X has been changed without the vault passphrase"** or **"is not
+  signed"** — something edited the manifest. Do not re-sign it yourself (you can't); tell
+  the user, who should check `patman lookup X` and then `!patman describe X --sign` if the
+  change was theirs.
 - **"no token file for X"** or `[FILE MISSING]` in `list` — ask the user to `!patman save X`.
 - **"contains control characters" / "is empty"** — the file was saved wrong. Ask the user
   to re-save.

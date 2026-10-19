@@ -6,8 +6,9 @@ use std::process::{Command, Stdio};
 
 use crate::error::{Context, Result, bail};
 use crate::guard;
-use crate::manifest::{Entry, Manifest, today};
+use crate::manifest::{Approval, Entry, Manifest, today};
 use crate::paths;
+use crate::policy;
 use crate::sealed;
 use crate::secure;
 use crate::token;
@@ -143,6 +144,23 @@ pub fn lookup(ctx: &Ctx, service: &str, json: bool) -> Result<()> {
     } else {
         println!("hosts:       {}", entry.hosts.join(", "));
     }
+    if entry.allow_exec {
+        println!("exec:        allowed");
+    }
+    if vault::is_sealed_install() {
+        println!(
+            "approval:    {}{}",
+            match entry.approval {
+                Approval::Session => "session (an open unlock session is enough)",
+                Approval::Request => "request (every use is approved on its own)",
+            },
+            if entry.policy_seal.is_some() {
+                ""
+            } else {
+                "  [POLICY NOT SIGNED — patman describe --sign]"
+            }
+        );
+    }
     println!("updated:     {}", entry.updated);
     if !token::exists(service) {
         println!("\nWARNING: the token file is missing. Run: patman save {service}");
@@ -181,6 +199,9 @@ fn describe_json(dir: &std::path::Path, name: &str, e: &Entry) -> serde_json::Va
         "description": e.description,
         "username": e.username,
         "hosts": e.hosts,
+        "allow_exec": e.allow_exec,
+        "approval": e.approval,
+        "policy_signed": e.policy_seal.is_some(),
         "updated": e.updated,
         "token_file_exists": token::exists(name),
     })
@@ -255,17 +276,22 @@ pub fn save(
     };
     let pinned = !hosts.is_empty();
 
-    manifest.entries.insert(
-        service.to_string(),
-        Entry {
-            description,
-            allow_exec: existing.as_ref().map(|p| p.allow_exec).unwrap_or(false),
-            username: username.or_else(|| existing.as_ref().and_then(|p| p.username.clone())),
-            hosts,
-            updated: today(),
-            extra: existing.map(|p| p.extra).unwrap_or_default(),
-        },
-    );
+    let mut entry = Entry {
+        description,
+        allow_exec: existing.as_ref().map(|p| p.allow_exec).unwrap_or(false),
+        approval: existing.as_ref().map(|p| p.approval).unwrap_or_default(),
+        policy_seal: None,
+        username: username.or_else(|| existing.as_ref().and_then(|p| p.username.clone())),
+        hosts,
+        updated: today(),
+        extra: existing.map(|p| p.extra).unwrap_or_default(),
+    };
+    // The passphrase was just typed, so whatever policy this save leaves in
+    // place is signed — including any hosts or username it changed.
+    if let Some(key) = &key {
+        policy::sign(key, service, &mut entry)?;
+    }
+    manifest.entries.insert(service.to_string(), entry);
     manifest.save(&ctx.manifest_path)?;
 
     println!(
@@ -292,6 +318,10 @@ pub struct Edits {
     pub clear_hosts: bool,
     /// `None` leaves the flag as it is; `Some` sets it.
     pub allow_exec: Option<bool>,
+    pub approval: Option<Approval>,
+    /// Re-sign the policy as it stands, after a hand edit or for an entry
+    /// written before the vault existed.
+    pub sign: bool,
 }
 
 pub fn describe(ctx: &Ctx, service: &str, edits: Edits) -> Result<()> {
@@ -302,6 +332,8 @@ pub fn describe(ctx: &Ctx, service: &str, edits: Edits) -> Result<()> {
         hosts,
         clear_hosts,
         allow_exec,
+        approval,
+        sign,
     } = edits;
 
     paths::validate_service(service)?;
@@ -344,26 +376,74 @@ pub fn describe(ctx: &Ctx, service: &str, edits: Edits) -> Result<()> {
         hosts
     };
 
-    manifest.entries.insert(
-        service.to_string(),
-        Entry {
-            description,
-            allow_exec: allow_exec
-                .unwrap_or_else(|| existing.as_ref().map(|p| p.allow_exec).unwrap_or(false)),
-            username,
-            hosts,
-            // Metadata-only edit: `updated` tracks the token value, so an entry
-            // whose description was reworded must not look freshly rotated.
-            updated: existing
-                .as_ref()
-                .map(|p| p.updated.clone())
-                .unwrap_or_else(today),
-            extra: existing.map(|p| p.extra).unwrap_or_default(),
-        },
-    );
+    let mut entry = Entry {
+        description,
+        allow_exec: allow_exec
+            .unwrap_or_else(|| existing.as_ref().map(|p| p.allow_exec).unwrap_or(false)),
+        approval: approval
+            .unwrap_or_else(|| existing.as_ref().map(|p| p.approval).unwrap_or_default()),
+        policy_seal: existing.as_ref().and_then(|p| p.policy_seal.clone()),
+        username,
+        hosts,
+        // Metadata-only edit: `updated` tracks the token value, so an entry
+        // whose description was reworded must not look freshly rotated.
+        updated: existing
+            .as_ref()
+            .map(|p| p.updated.clone())
+            .unwrap_or_else(today),
+        extra: existing
+            .as_ref()
+            .map(|p| p.extra.clone())
+            .unwrap_or_default(),
+    };
+
+    // Under a sealed vault, changing the policy is a human act: it takes the
+    // passphrase, the same as unlocking. Otherwise anything that can run
+    // `patman describe` could switch a service from `request` to `session`, or
+    // add a host, and the unlock agent would obey. A description-only edit
+    // keeps the existing seal and asks for nothing.
+    let mut signed = false;
+    if vault::is_sealed_install() {
+        let changed = existing
+            .as_ref()
+            .is_none_or(|prev| !policy::same(service, prev, &entry));
+        if sign || changed || entry.policy_seal.is_none() {
+            let key = passphrase_for_policy(service)?;
+            policy::sign(&key, service, &mut entry)?;
+            signed = true;
+        }
+    } else {
+        if approval.is_some() || sign {
+            return bail(
+                "approval modes and policy signing only apply to a sealed vault —                  run: patman vault init",
+            );
+        }
+        entry.policy_seal = None;
+    }
+
+    manifest.entries.insert(service.to_string(), entry);
     manifest.save(&ctx.manifest_path)?;
-    println!("Updated manifest entry for {service}.");
+    println!(
+        "Updated manifest entry for {service}.{}",
+        if signed { " Policy signed." } else { "" }
+    );
     Ok(())
+}
+
+/// The vault key, for signing a policy change. Its refusal is worded for the
+/// case that matters: an agent trying to loosen a rule it is bound by.
+fn passphrase_for_policy(service: &str) -> Result<sealed::Key> {
+    if !vault::has_tty() {
+        return bail(format!(
+            "changing how {service:?} may be used (hosts, username, exec, approval)              needs the vault passphrase under a sealed vault, and there is no terminal              to type it on.
+             Run it yourself — in Claude Code prefix it with `!`:
+                 !patman describe {service} ..."
+        ));
+    }
+    let v = vault::load()?;
+    let pass =
+        vault::prompt_passphrase("Vault passphrase, to sign the policy change (input hidden): ")?;
+    vault::unlock(&v, &pass)
 }
 
 pub fn delete(ctx: &Ctx, service: &str, assume_yes: bool) -> Result<()> {
@@ -587,6 +667,34 @@ fn key_for(service: &str) -> Result<Option<sealed::Key>> {
     vault::unlock(&v, &pass).map(Some)
 }
 
+/// For a `request` service, collect the passphrase that approves this one call
+/// — but only where the unlock agent cannot ask the human itself.
+///
+/// On macOS the agent raises a Touch ID prompt, so nothing is collected here.
+/// Elsewhere the human types the passphrase at this prompt, after being shown
+/// what they are approving. With no terminal (an agent's tool call) nothing is
+/// sent and the agent refuses, which is the point. This reads the manifest only
+/// to decide whether to prompt; the agent re-checks the signed policy and
+/// decides for itself.
+#[cfg(unix)]
+fn approval_passphrase(
+    ctx: &Ctx,
+    service: &str,
+    what: impl FnOnce() -> String,
+) -> Result<Option<String>> {
+    let manifest = Manifest::load(&ctx.manifest_path)?;
+    let needs = manifest
+        .get(service)
+        .is_some_and(|e| e.approval == Approval::Request);
+    let touch_id = cfg!(target_os = "macos") && std::env::var_os("PATMAN_NO_TOUCHID").is_none();
+    if !needs || touch_id || !vault::has_tty() {
+        return Ok(None);
+    }
+    eprintln!("patman: {service:?} needs approval for this request:");
+    eprintln!("  {}", what());
+    vault::prompt_passphrase("Vault passphrase to approve (input hidden): ").map(Some)
+}
+
 fn curl_result(code: Option<i32>) -> Result<()> {
     match code {
         Some(0) => Ok(()),
@@ -618,16 +726,25 @@ pub fn curl(ctx: &Ctx, service: &str, auth: Auth, args: &[String]) -> Result<()>
 
     #[cfg(unix)]
     if vault::is_sealed_install() && agent::is_running() {
+        let approval = approval_passphrase(ctx, service, || {
+            crate::approve::describe_curl(service, args)
+        })?;
         let code = agent::send(&agent::Request::Curl {
             service: service.to_string(),
             auth,
             args: args.to_vec(),
+            approval,
         })?;
         return curl_result(Some(code));
     }
 
+    // Locked: the passphrase typed here is itself a per-request approval, so a
+    // `request` service needs nothing extra on this path.
     let key = key_for(service)?;
     let manifest = Manifest::load(&ctx.manifest_path)?;
+    if let Some(key) = &key {
+        policy::verify(key, &manifest, service)?;
+    }
     let plan = usage::plan(&manifest, service, auth);
 
     // Both checks run before the token is read from disk. The flag blocklist is
@@ -666,9 +783,13 @@ pub fn exec(ctx: &Ctx, service: &str, args: &[String]) -> Result<()> {
 
     #[cfg(unix)]
     if sealed_install && agent::is_running() {
+        let approval = approval_passphrase(ctx, service, || {
+            crate::approve::describe_exec(service, args)
+        })?;
         let code = agent::send(&agent::Request::Exec {
             service: service.to_string(),
             args: args.to_vec(),
+            approval,
         })?;
         std::process::exit(code);
     }
@@ -682,6 +803,9 @@ pub fn exec(ctx: &Ctx, service: &str, args: &[String]) -> Result<()> {
     usage::authorize_exec(service, &plan, sealed_install)?;
 
     let key = key_for(service)?;
+    if let Some(key) = &key {
+        policy::verify(key, &manifest, service)?;
+    }
     let secret = token::read(service, key.as_ref())?;
 
     let mut cmd = Command::new(program);
@@ -714,9 +838,11 @@ pub fn vault_init(ctx: &Ctx) -> Result<()> {
          and the tokens are gone (rotate them at the provider instead)."
     );
     let pass = vault::prompt_new_passphrase()?;
-    vault::create(&pass)?;
+    let v = vault::create(&pass)?;
+    let key = vault::unlock(&v, &pass)?;
 
     println!("\nCreated {}", vault::path()?.display());
+    sign_policies(ctx, &key)?;
 
     let plaintext: Vec<String> = token::list_files(&ctx.dir)?
         .into_iter()
@@ -764,8 +890,25 @@ pub fn vault_seal(ctx: &Ctx) -> Result<()> {
     }
 
     println!("\n{sealed_count} sealed, {already} already sealed.");
+    sign_policies(ctx, &key)?;
     if sealed_count > 0 {
         println!("Start a session with:  patman unlock");
+    }
+    Ok(())
+}
+
+/// Sign every manifest entry's policy as it stands. Run by `vault init` and
+/// `vault seal`, where the human has just typed the passphrase — which makes it
+/// their endorsement of the current hosts, exec and approval settings.
+fn sign_policies(ctx: &Ctx, key: &sealed::Key) -> Result<()> {
+    let mut manifest = Manifest::load(&ctx.manifest_path)?;
+    let n = policy::sign_all(key, &mut manifest)?;
+    manifest.save(&ctx.manifest_path)?;
+    if n > 0 {
+        println!(
+            "Signed the policy of {n} service(s) as it stands now — review it with \
+             `patman list --json` if anything else could have edited the manifest."
+        );
     }
     Ok(())
 }

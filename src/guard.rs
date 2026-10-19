@@ -140,7 +140,7 @@ pub fn enforce_hosts(service: &str, args: &[String], allowed: &[String]) -> Resu
 /// refusing when no full URL is present, and `patman curl` restricts curl to
 /// https via `proto = "=https"` so a schemeless stowaway (guessed as http) dies
 /// inside curl itself.
-fn collect_urls(args: &[String]) -> Vec<String> {
+pub fn collect_urls(args: &[String]) -> Vec<String> {
     let mut urls = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {

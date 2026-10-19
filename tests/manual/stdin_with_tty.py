@@ -103,10 +103,12 @@ def main():
         [("Vault passphrase", PASS)], env)
     assert code == 0, f"unlock failed:\n{out}"
 
-    got = subprocess.run(
-        [patman, "exec", "github", "--", "sh", "-c", "printf %s \"$PAT_TOKEN\""],
-        env=env, capture_output=True, text=True)
-    subprocess.run([patman, "describe", "github", "--allow-exec"], env=env, capture_output=True)
+    # Opting in to exec is a policy change, so under a sealed vault it takes the
+    # passphrase too — the agent cannot grant itself exec.
+    code, out = run_with_piped_stdin(
+        [patman, "describe", "github", "--allow-exec"], b"",
+        [("Vault passphrase", PASS)], env)
+    assert code == 0, f"describe --allow-exec failed:\n{out}"
     got = subprocess.run(
         [patman, "exec", "github", "--", "sh", "-c", "printf %s \"$PAT_TOKEN\""],
         env=env, capture_output=True, text=True)

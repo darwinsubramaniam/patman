@@ -57,6 +57,15 @@ getrandom = "0.4.3"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Touch ID (or the login password) for services that need approval per request.
+# The prompt runs inside the unlock agent, out of band from the caller, so an
+# agent driving `patman curl` cannot answer it.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
+block2 = "0.6"
+
 [profile.release]
 strip = true
 opt-level = "z"

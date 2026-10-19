@@ -41,6 +41,17 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_exec: bool,
 
+    /// Whether an open unlock session is enough to spend this token, or every
+    /// use needs its own approval. Only meaningful under a sealed vault.
+    #[serde(default, skip_serializing_if = "Approval::is_session")]
+    pub approval: Approval,
+
+    /// Hex seal over the policy fields above, made with the vault key. See
+    /// [`crate::policy`] — it is what stops the policy being loosened by
+    /// anything that can merely write this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_seal: Option<String>,
+
     /// `YYYY-MM-DD`, last time the token value was written.
     pub updated: String,
 
@@ -48,6 +59,26 @@ pub struct Entry {
     /// so an older binary can't silently strip them.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// How much human involvement spending a sealed token takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Approval {
+    /// An open unlock session is enough: `patman curl` works unattended until
+    /// it expires. For low-risk tokens.
+    #[default]
+    Session,
+    /// Every use is approved on its own — Touch ID (or the login password) on
+    /// macOS, the vault passphrase elsewhere — and the prompt shows what is
+    /// being sent where. An unlock session alone is not enough.
+    Request,
+}
+
+impl Approval {
+    pub fn is_session(&self) -> bool {
+        *self == Approval::Session
+    }
 }
 
 /// `BTreeMap` rather than a preserve-order map: keys stay sorted, so rewriting

@@ -11,7 +11,7 @@
 
 use crate::error::{Result, bail};
 use crate::guard;
-use crate::manifest::Manifest;
+use crate::manifest::{Approval, Manifest};
 use crate::token::Secret;
 
 #[derive(
@@ -35,6 +35,10 @@ pub struct Plan {
     pub username: Option<String>,
     pub hosts: Vec<String>,
     pub allow_exec: bool,
+    /// Read only by the unlock agent. Without one (Windows) every sealed use
+    /// already prompts for the passphrase, which is a per-request approval.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub approval: Approval,
 }
 
 pub fn plan(manifest: &Manifest, service: &str, auth: Auth) -> Plan {
@@ -50,6 +54,7 @@ pub fn plan(manifest: &Manifest, service: &str, auth: Auth) -> Plan {
         username,
         hosts: entry.map(|e| e.hosts.clone()).unwrap_or_default(),
         allow_exec: entry.map(|e| e.allow_exec).unwrap_or(false),
+        approval: entry.map(|e| e.approval).unwrap_or_default(),
     }
 }
 
@@ -180,6 +185,7 @@ mod tests {
             username: None,
             hosts: vec![],
             allow_exec: false,
+            approval: Approval::Session,
         };
         assert!(authorize_exec("gh", &open, false).is_ok());
         assert!(authorize_exec("gh", &open, true).is_err());
