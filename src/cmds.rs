@@ -156,7 +156,7 @@ fn install_guards(agents: &[skill::Target], project: bool) -> Result<()> {
             }
             guardrail::Outcome::Unparseable => println!(
                 "Guard ({}): {} is not plain JSON (comments?), left untouched. \
-                 Add the guard by hand; README.md, \"AI coding agents\", lists what goes where.",
+                 Add the guard by hand; docs/guide.md, \"The guard\", lists what goes where.",
                 h.label(),
                 file.display()
             ),

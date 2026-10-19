@@ -70,7 +70,7 @@ URL.
 
 `patman init` also registers a guard with each harness it finds, so a tool call that
 reads, lists, or writes `~/.pat/` is refused before it runs, whatever the skill says. The
-README's "AI coding agents" section lists the file each harness gets. `--no-guard` skips
+[guide](../docs/guide.md#the-guard) lists the file each harness gets. `--no-guard` skips
 it, `patman init --remove` undoes both, and `--project` installs the skill only: a
 committed hook would make every teammate's harness depend on having patman.
 
