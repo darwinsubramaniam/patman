@@ -65,6 +65,22 @@ publish-update; `gh secret set CARGO_REGISTRY_TOKEN`). Without it that job logs 
 skip and the GitHub release still happens. It also no-ops if the version is
 already on crates.io, so re-running a release is safe.
 
+### Version and build number
+
+`build.rs` stamps the version with a build number — the commit count of `HEAD`.
+The count orders builds but is not unique across branches, so dev builds carry
+the commit hash as well, and `.dirty` when uncommitted changes were compiled in:
+
+| Build | `patman -V` | `patman --version` |
+|---|---|---|
+| Local / any non-release build | `1.0.0-dev:42+fc2256d` | same |
+| …with uncommitted changes | `1.0.0-dev:42+fc2256d.dirty` | same |
+| Release workflow (`PATMAN_RELEASE=1`) | `1.0.0:42` | `1.0.0:42 (fc2256d)` |
+| crates.io source (no git history) | `1.0.0` | `1.0.0` |
+
+The release workflow checks out with `fetch-depth: 0`; a shallow clone would
+count one commit and report every release as build 1.
+
 `[package.metadata.binstall]` in `Cargo.toml` maps `cargo binstall` onto those
 release archives — if the archive naming in the release workflow changes, that
 block has to change with it.

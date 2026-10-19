@@ -26,7 +26,8 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "patman",
-    version,
+    version = env!("PATMAN_VERSION"),
+    long_version = env!("PATMAN_LONG_VERSION"),
     about = "Store, describe, look up, rotate, and use personal access tokens in $HOME/.pat/",
     long_about = "Token values live in $HOME/.pat/<service>, locked to the current user.\n\
                   Metadata lives in $HOME/.pat/manifest.json and contains no secrets, so it is \

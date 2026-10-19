@@ -37,6 +37,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
+          # Full history: the build number is the commit count, and a shallow
+          # clone would report every release as build 1.
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -69,6 +72,9 @@ jobs:
           echo "tag ${tag} matches Cargo.toml version ${crate}"
 
       - name: Build
+        env:
+          # Drops the "-dev" from the reported version — see build.rs.
+          PATMAN_RELEASE: "1"
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package (unix)
