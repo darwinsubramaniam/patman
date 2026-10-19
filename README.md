@@ -291,6 +291,27 @@ patman delete github --yes
 That removes the local file and manifest entry only — revoke the token at the
 issuing service too.
 
+## Terminal UI
+
+```sh
+patman tui
+```
+
+A full-screen editor over the same commands: browse and filter services, edit
+the description, username, pinned hosts, exec permission and approval mode, store
+or rotate a token, delete one (type its name to confirm), re-sign a policy,
+migrate a legacy file, unlock or lock a session, and run `doctor`, `orphans`,
+`fix-perms` and `vault init`/`seal`. Press `?` for the keys.
+
+It never shows a token value and has no field to type one into. Anything that
+prompts — a token, the vault passphrase — runs with the UI suspended, on the plain
+terminal with echo off, exactly as the CLI does. Like `save` and `unlock`, it
+needs a real terminal, so an agent's tool call cannot drive it.
+
+The list marks entries that need attention: `!` token file missing, `?` file
+with no manifest entry, `~` no hosts pinned. Build without it with
+`cargo install patman --no-default-features`.
+
 ## Housekeeping
 
 ```sh

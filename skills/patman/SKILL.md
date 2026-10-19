@@ -42,6 +42,7 @@ only remedy.
 | `describe` (metadata, host pinning) | agent, after proposing it to the user — **user only** under a sealed vault for hosts, username, `--allow-exec`, `--approval` (passphrase) |
 | `save`, `rotate` | **user only** |
 | `unlock`, `vault init`, `vault seal` | **user only** (passphrase entry) |
+| `tui` | **user only** — a full-screen editor; suggest it when the user wants to tidy up several entries |
 | `status`, `lock` | agent, freely |
 | `delete`, `migrate`, `fix-perms` | user, or agent on explicit request |
 

@@ -16,7 +16,9 @@ cargo run -- list      # run a subcommand from the working tree
 `main.rs` defines the clap CLI, `cmds.rs` holds every command implementation,
 and the rest is one concern each — `token.rs` (read/write/prompt), `manifest.rs`
 (metadata), `paths.rs` (path validation), `secure.rs` (permissions), `guard.rs`
-(host pinning and curl-arg vetting), `error.rs`.
+(host pinning and curl-arg vetting), `error.rs`. `tui.rs` is the `patman tui`
+front end (behind the default `tui` feature): it only collects arguments and
+calls the same `cmds` functions, suspending itself for any prompt.
 
 The invariant the code exists to enforce is stated at the top of `main.rs`: a
 token value moves from the terminal into a file, and from that file into a

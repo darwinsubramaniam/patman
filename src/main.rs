@@ -18,6 +18,8 @@ mod policy;
 mod sealed;
 mod secure;
 mod token;
+#[cfg(feature = "tui")]
+mod tui;
 mod usage;
 mod vault;
 
@@ -211,6 +213,14 @@ enum Cmd {
     /// Report whether the vault is sealed, and whether a session is open.
     Status,
 
+    /// Open the terminal UI for editing and maintenance: browse services, edit
+    /// descriptions and policy, store, rotate, delete, and run the health checks.
+    ///
+    /// Must be run by you, in a real terminal window. Token values are never
+    /// shown; anything that prompts runs on the plain terminal with echo off.
+    #[cfg(feature = "tui")]
+    Tui,
+
     /// The unlock agent itself. Started by `patman unlock`; not for direct use.
     ///
     /// Reads the vault key from stdin — never argv, which is world-readable via
@@ -308,6 +318,8 @@ fn run() -> error::Result<()> {
         Cmd::Unlock { minutes } => cmds::unlock(minutes.saturating_mul(60)),
         Cmd::Lock => cmds::lock(),
         Cmd::Status => cmds::status(),
+        #[cfg(feature = "tui")]
+        Cmd::Tui => tui::run(&ctx),
 
         #[cfg(unix)]
         Cmd::AgentServe { ttl } => agent::serve(ttl),

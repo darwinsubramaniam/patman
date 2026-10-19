@@ -51,6 +51,9 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = [
     "zeroize",
 ] }
 getrandom = "0.4.3"
+# `patman tui`. Optional so a minimal build (`--no-default-features`) carries no
+# terminal-UI code at all; it touches no secret either way.
+ratatui = { version = "0.30.2", optional = true }
 
 # `setsid(2)`, so the unlock agent survives the terminal that started it closing.
 # Unix-only: the agent is a unix-socket design and is not built on Windows.
@@ -71,3 +74,7 @@ strip = true
 opt-level = "z"
 lto = true
 panic = "abort"
+
+[features]
+default = ["tui"]
+tui = ["dep:ratatui"]
