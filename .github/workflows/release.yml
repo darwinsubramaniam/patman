@@ -126,6 +126,10 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          # git-cliff needs every tag and commit to find this release's range.
+          fetch-depth: 0
 
       - name: Download artifacts
         uses: actions/download-artifact@v8
@@ -170,11 +174,22 @@ jobs:
           rm -f "${key}"
           ls -la
 
+      # Notes come from the Conventional Commits since the previous tag (see
+      # cliff.toml). GitHub's own generator only sees merged PRs, and most
+      # changes land on main directly.
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: artifacts/*
           fail_on_unmatched_files: true
 

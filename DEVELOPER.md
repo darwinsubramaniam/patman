@@ -67,9 +67,18 @@ every push and PR, and gates on `cargo fmt` + `cargo clippy -D warnings`.
 Tagging cuts a release:
 
 ```sh
-# bump version in Cargo.toml, commit, then:
-git tag v1.0.1 && git push origin v1.0.1
+# bump version in Cargo.toml, then regenerate the changelog (brew install git-cliff):
+git cliff --tag v1.0.1 -o CHANGELOG.md
+git commit -am "chore: release 1.0.1"
+git tag v1.0.1 && git push origin main v1.0.1
 ```
+
+`CHANGELOG.md` and the GitHub release notes are both built by git-cliff from
+commit messages (`cliff.toml`), so write commits as Conventional Commits:
+`feat:` and `fix:` show up as Features and Bug fixes, `perf:`, `refactor:` and
+`docs:` get their own sections, and `chore:`, `ci:`, `style:`, `test:` and
+`build:` are left out. Add `!` (`feat!:`) or a `BREAKING CHANGE:` footer to
+flag a breaking change.
 
 `.github/workflows/release.yml` builds five targets (macOS arm64/x86_64, Linux
 arm64/x86_64 static musl, Windows x86_64), publishes them with `SHA256SUMS` on a
