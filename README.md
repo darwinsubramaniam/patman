@@ -33,6 +33,10 @@ cargo binstall patman     # prebuilt binary, fastest
 cargo install patman      # or build from source
 ```
 
+Later, `patman update` checks for a newer release and asks before installing it
+(`--check` only reports, `--yes` skips the question). Releases are signed, and it
+installs nothing whose signature does not match.
+
 ## Get started
 
 **1. Set up patman and your AI tools.**

@@ -120,6 +120,10 @@ jobs:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
+    # MINISIGN_SECRET_KEY is an environment secret, and the environment only
+    # admits `v*` tags: a workflow edited on a branch or in a PR never sees the
+    # key. (A manual run must be started from the tag, not from main.)
+    environment: release
     steps:
       - uses: actions/checkout@v7
 
@@ -136,6 +140,34 @@ jobs:
           # Normalise sha256sum's binary marker (" *file") to the "  file" form.
           cat *.sha256 | sed 's/ \*/  /' | sort -k2 > SHA256SUMS
           rm -f *.sha256
+          ls -la
+
+      # `patman update` and `cargo binstall` refuse an archive without a valid
+      # `<archive>.sig` from this key, so an unsigned release is useless to them —
+      # fail here instead. The trusted comment names the tag and the file, and
+      # `patman update` checks it, so a signature cannot be moved to another file.
+      # The key was made with `minisign -G -W` (no passphrase: nobody is here to
+      # type one); the repo secret holds the whole .key file.
+      - name: Sign archives
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "No MINISIGN_SECRET_KEY secret set - refusing to publish an unsigned release." >&2
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          key="${RUNNER_TEMP}/patman.key"
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "${key}"
+          chmod 600 "${key}"
+          cd artifacts
+          for f in *.tar.gz *.zip; do
+            minisign -S -s "${key}" -m "${f}" -x "${f}.sig" -t "patman ${tag} ${f}"
+          done
+          rm -f "${key}"
           ls -la
 
       - name: Create GitHub release

@@ -285,7 +285,28 @@ patman doctor        # permissions, manifest, encryption, agent setup, stray fil
 patman orphans       # token files with no manifest entry, and entries with no file
 patman fix-perms     # reapply owner-only permissions
 patman migrate jira  # move a token file you kept yourself into ~/.pat/jira
+patman update        # install the latest release, after asking
 ```
+
+`update` asks GitHub for the latest release and, if it is newer, asks before
+installing it. `--check` only reports; `--yes` installs without asking. It needs a
+terminal to ask on, so an agent cannot run it without `--yes`.
+
+- **Signed releases only.** Every release archive is signed with the patman
+  release key, and the public half is built into patman. `update` refuses an
+  archive whose signature does not check out, or that was signed for a different
+  release or file. A matching checksum alone would not be enough: whoever could
+  replace the archive could replace the checksum too.
+- **The new binary has to work.** It must start and report the version it was
+  released as before it replaces the old one, and the swap is a single rename.
+- **Installed with cargo?** Then cargo does the update (`cargo binstall`, which
+  checks the same signature, or `cargo install`), so cargo's record of what is
+  installed stays right. A Homebrew install is left to `brew upgrade patman`.
+- **Unlock sessions end.** An open session is served by the old binary, so
+  `update` locks it; run `patman unlock` again.
+
+If the binary sits in a directory you cannot write to, update it the way you
+installed it instead.
 
 `migrate` is for tokens you stored before using patman. It moves `~/.<service>_pat`
 (for example `~/.jira_pat`) into `~/.pat/<service>`; `--from <path>` takes any other
@@ -351,7 +372,7 @@ The guard matches paths, so it stops an agent that is careless or tricked by
 something it read, not a command written to get around it. Encrypt your tokens to
 make a file useless even when it is read.
 
-After upgrading patman, run `patman init` again to refresh the skill and the guard.
+After upgrading patman (`patman update`), run `patman init` again to refresh the skill and the guard.
 `patman doctor` reports a stale skill or a missing guard.
 
 ## What patman does not protect against

@@ -81,6 +81,37 @@ publish-update; `gh secret set CARGO_REGISTRY_TOKEN`). Without it that job logs 
 skip and the GitHub release still happens. It also no-ops if the version is
 already on crates.io, so re-running a release is safe.
 
+### Release signing
+
+The release job signs every archive with minisign (`<archive>.sig`, trusted
+comment `patman <tag> <file>`) and **fails without the key** — `patman update` and
+`cargo binstall --only-signed` refuse unsigned archives, so an unsigned release
+would be one nobody can update to. The public key lives once, in
+`[package.metadata.binstall.signing]` in `Cargo.toml`: binstall reads it there,
+and `build.rs` compiles it into patman for `patman update`.
+
+One-time setup (or to rotate the key):
+
+```sh
+minisign -G -W -p minisign.pub -s ~/.minisign/patman.key   # -W: CI cannot type a passphrase
+gh secret set MINISIGN_SECRET_KEY --env release < ~/.minisign/patman.key
+# put the second line of minisign.pub into Cargo.toml's pubkey = "..."
+```
+
+The secret belongs to the `release` environment, not the repository, and that
+environment must only admit `v*` tags (Settings → Environments → release →
+Deployment branches and tags → Selected → tag rule `v*`). Then a workflow
+edited on a branch or in a PR cannot read the key. A manual release run has to
+be started from the tag, not from `main`.
+
+What the signature does not cover: whoever controls the GitHub account can push
+a tag and get anything signed. Keep 2FA on that account (a passkey or hardware
+key, not SMS).
+
+Keep a backup of the `.key` file somewhere offline. Losing it means a new key, and
+binaries built with the old public key cannot verify releases signed by the new
+one — their users have to update by hand once.
+
 ### Version and build number
 
 `build.rs` stamps the version with a build number — the commit count of `HEAD`.

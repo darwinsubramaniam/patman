@@ -29,6 +29,22 @@ fn git(args: &[&str]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// `pubkey = "..."` under `[package.metadata.binstall.signing]` in Cargo.toml.
+/// A line scan, not a TOML parser: the section is ours and has one shape.
+fn signing_pubkey() -> Option<String> {
+    let toml = std::fs::read_to_string("Cargo.toml").ok()?;
+    let mut in_section = false;
+    for line in toml.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_section = line == "[package.metadata.binstall.signing]";
+        } else if in_section && let Some(rest) = line.strip_prefix("pubkey") {
+            let value = rest.trim_start().strip_prefix('=')?.trim();
+            return Some(value.trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
 fn main() {
     let version = env!("CARGO_PKG_VERSION");
     let release = std::env::var("PATMAN_RELEASE").is_ok_and(|v| v == "1");
@@ -76,6 +92,19 @@ fn main() {
 
     println!("cargo:rustc-env=PATMAN_VERSION={short}");
     println!("cargo:rustc-env=PATMAN_LONG_VERSION={long}");
+    // `patman update` downloads the release archive built for this target.
+    println!(
+        "cargo:rustc-env=PATMAN_TARGET={}",
+        std::env::var("TARGET").unwrap_or_default()
+    );
+
+    // The key `patman update` checks release signatures against. One source of
+    // truth: the same key `cargo binstall` checks, in Cargo.toml. A build
+    // without it still works; it just refuses to self-update.
+    println!(
+        "cargo:rustc-env=PATMAN_UPDATE_PUBKEY={}",
+        signing_pubkey().unwrap_or_default()
+    );
 
     // Re-run when HEAD moves: on checkout (HEAD itself), on commit (the branch
     // ref, or packed-refs after a gc), and when the release flag flips. Also

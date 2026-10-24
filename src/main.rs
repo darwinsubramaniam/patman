@@ -24,6 +24,7 @@ mod skill;
 mod token;
 #[cfg(feature = "tui")]
 mod tui;
+mod update;
 mod usage;
 mod vault;
 
@@ -253,6 +254,19 @@ enum Cmd {
     #[cfg(feature = "tui")]
     Tui,
 
+    /// Check for a newer patman release and, after asking, install it over
+    /// this binary. The download must carry a valid minisign signature from the
+    /// release key.
+    Update {
+        /// Only report whether a newer release exists; install nothing.
+        #[arg(long)]
+        check: bool,
+
+        /// Install without asking.
+        #[arg(short, long, conflicts_with = "check")]
+        yes: bool,
+    },
+
     /// The pre-tool-use guard a harness runs; installed by `patman init`.
     ///
     /// Reads the harness's tool-call JSON on stdin and refuses any call that
@@ -300,6 +314,11 @@ fn run() -> error::Result<()> {
         return Ok(());
     }
 
+    // Updating replaces the binary and touches nothing under ~/.pat/.
+    if let Cmd::Update { check, yes } = cli.command {
+        return update::run(check, yes);
+    }
+
     // Preflight before every command, including the read-only ones: it is cheap,
     // idempotent, and means no code path can operate on an unchecked directory.
     let ctx = cmds::bootstrap()?;
@@ -321,7 +340,7 @@ fn run() -> error::Result<()> {
                 remove,
             },
         ),
-        Cmd::Hook { .. } => unreachable!("handled before the preflight"),
+        Cmd::Hook { .. } | Cmd::Update { .. } => unreachable!("handled before the preflight"),
         Cmd::List { json } => cmds::list(&ctx, json),
         Cmd::Lookup { service, json } => cmds::lookup(&ctx, &service, json),
         Cmd::Search { keyword } => cmds::search(&ctx, &keyword),
