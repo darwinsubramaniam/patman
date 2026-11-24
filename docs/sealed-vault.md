@@ -224,6 +224,17 @@ settings** → a `request` service is refused without approval, runs with the
 passphrase, refuses a wrong one, and refuses a raw socket client → a `session`
 service still runs unattended → lock → refused again, socket cleaned up.
 
+Expiry across sleep, by hand. The TTL is checked against both the monotonic
+and the wall clock, because the monotonic clock stops while the machine is
+suspended:
+
+```
+patman unlock --minutes 1
+pmset sleepnow             # macOS; on Linux: systemctl suspend
+# wait two minutes or more, then wake the machine
+patman status              # sealed, locked — the session did not survive sleep
+```
+
 Touch ID, by hand on macOS:
 
 ```

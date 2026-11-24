@@ -33,7 +33,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -281,10 +281,60 @@ pub fn serve(ttl_secs: u64) -> Result<()> {
 
 const READY: &str = "ready";
 
+/// How often the hard-stop thread re-reads the clocks. Bounds how long the
+/// socket can outlive a deadline that passed while the machine was asleep;
+/// requests are refused immediately regardless, by [`Deadline::expired`].
+const HARD_STOP_POLL: Duration = Duration::from_secs(30);
+
+/// When the unlock session ends, held on two clocks.
+///
+/// `Instant` alone is not enough: it is monotonic but does not advance while
+/// the machine is suspended (`CLOCK_UPTIME_RAW` on macOS, `CLOCK_MONOTONIC` on
+/// Linux), so a session unlocked before closing the lid would still be open in
+/// the morning. `SystemTime` alone is not enough either: it does advance
+/// through sleep, but can be stepped backwards, which would extend the session.
+///
+/// So the session ends when *either* clock says so. Sleep is caught by the
+/// wall clock, a clock set back is caught by the monotonic one, and a clock
+/// set forward only ends the session early — the safe direction to fail.
+#[derive(Clone, Copy, Debug)]
+struct Deadline {
+    mono: Instant,
+    wall: SystemTime,
+}
+
+impl Deadline {
+    fn after(ttl: Duration) -> Self {
+        Deadline {
+            mono: Instant::now() + ttl,
+            wall: SystemTime::now() + ttl,
+        }
+    }
+
+    fn expired(&self) -> bool {
+        self.expired_at(Instant::now(), SystemTime::now())
+    }
+
+    fn remaining(&self) -> Duration {
+        self.remaining_at(Instant::now(), SystemTime::now())
+    }
+
+    fn expired_at(&self, mono: Instant, wall: SystemTime) -> bool {
+        self.remaining_at(mono, wall).is_zero()
+    }
+
+    /// The smaller of what the two clocks have left; zero once either passes.
+    fn remaining_at(&self, mono: Instant, wall: SystemTime) -> Duration {
+        let by_mono = self.mono.saturating_duration_since(mono);
+        let by_wall = self.wall.duration_since(wall).unwrap_or(Duration::ZERO);
+        by_mono.min(by_wall)
+    }
+}
+
 struct Started {
     listener: UnixListener,
     key: Arc<Key>,
-    deadline: Instant,
+    deadline: Deadline,
     path: PathBuf,
 }
 
@@ -309,17 +359,19 @@ fn start(ttl_secs: u64) -> Result<Started> {
     let listener = UnixListener::bind(&path).ctx(format!("binding {}", path.display()))?;
     secure::lock_down_file(&path)?;
 
-    let deadline = Instant::now() + Duration::from_secs(ttl_secs);
+    let deadline = Deadline::after(Duration::from_secs(ttl_secs));
 
     // Hard stop. Held separately from the per-request check so a session that
     // goes quiet still expires on time rather than lingering until someone
-    // happens to make a request.
+    // happens to make a request. Sleeps in short steps and re-reads both
+    // clocks each time: one long `thread::sleep` is itself paused while the
+    // machine is suspended, so it would wake late by however long the lid was
+    // shut.
     {
         let path = path.clone();
         std::thread::spawn(move || {
-            let now = Instant::now();
-            if deadline > now {
-                std::thread::sleep(deadline - now);
+            while !deadline.expired() {
+                std::thread::sleep(deadline.remaining().min(HARD_STOP_POLL));
             }
             let _ = std::fs::remove_file(&path);
             std::process::exit(0);
@@ -358,7 +410,7 @@ fn accept_loop(started: Started) -> Result<()> {
     Ok(())
 }
 
-fn handle(conn: UnixStream, key: &Key, deadline: Instant, sock: &std::path::Path) -> Result<()> {
+fn handle(conn: UnixStream, key: &Key, deadline: Deadline, sock: &std::path::Path) -> Result<()> {
     let out = Arc::new(Mutex::new(conn.try_clone().ctx("cloning the connection")?));
     let mut reader = BufReader::new(conn);
 
@@ -372,7 +424,7 @@ fn handle(conn: UnixStream, key: &Key, deadline: Instant, sock: &std::path::Path
         Err(e) => return fail(&out, &format!("malformed request: {e}")),
     };
 
-    if Instant::now() > deadline {
+    if deadline.expired() {
         return fail(
             &out,
             "the unlock session has expired — run `patman unlock` in a terminal window",
@@ -381,7 +433,7 @@ fn handle(conn: UnixStream, key: &Key, deadline: Instant, sock: &std::path::Path
 
     match req {
         Request::Status => {
-            let left = deadline.saturating_duration_since(Instant::now()).as_secs();
+            let left = deadline.remaining().as_secs();
             reply(
                 &out,
                 &format!("unlocked, {}m{}s remaining", left / 60, left % 60),
@@ -559,6 +611,54 @@ fn pump(out: &Out, child: &mut std::process::Child) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TTL: Duration = Duration::from_secs(15 * 60);
+
+    fn deadline_from(mono: Instant, wall: SystemTime) -> Deadline {
+        Deadline {
+            mono: mono + TTL,
+            wall: wall + TTL,
+        }
+    }
+
+    #[test]
+    fn a_fresh_session_is_open_with_the_full_ttl() {
+        let (m, w) = (Instant::now(), SystemTime::now());
+        let d = deadline_from(m, w);
+        assert!(!d.expired_at(m, w));
+        assert_eq!(d.remaining_at(m, w), TTL);
+    }
+
+    #[test]
+    fn a_session_expires_when_the_machine_slept_past_it() {
+        // Suspend: the wall clock moved 8h, the monotonic clock barely at all.
+        let (m, w) = (Instant::now(), SystemTime::now());
+        let d = deadline_from(m, w);
+        let woke = w + Duration::from_secs(8 * 3600);
+        assert!(d.expired_at(m + Duration::from_secs(60), woke));
+        assert_eq!(d.remaining_at(m, woke), Duration::ZERO);
+    }
+
+    #[test]
+    fn setting_the_wall_clock_back_does_not_extend_a_session() {
+        let (m, w) = (Instant::now(), SystemTime::now());
+        let d = deadline_from(m, w);
+        let rewound = w - Duration::from_secs(24 * 3600);
+        assert!(d.expired_at(m + TTL, rewound));
+        // And the remaining time reported never exceeds the monotonic budget.
+        assert_eq!(
+            d.remaining_at(m + Duration::from_secs(60), rewound),
+            TTL - Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn remaining_time_is_the_smaller_of_the_two_clocks() {
+        let (m, w) = (Instant::now(), SystemTime::now());
+        let d = deadline_from(m, w);
+        let left = d.remaining_at(m + Duration::from_secs(60), w + Duration::from_secs(300));
+        assert_eq!(left, TTL - Duration::from_secs(300));
+    }
 
     #[test]
     fn frames_round_trip() {
