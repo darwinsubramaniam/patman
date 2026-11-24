@@ -203,6 +203,15 @@ that needs a counter the agent cannot write, which a same-user design lacks.
 - **Socket path length.** `sockaddr_un.sun_path` is 104 bytes on macOS. A deep
   `$HOME` gets a clear error and falls back to passphrase-per-use; an env-var
   override would be the fix.
+- **Session expiry and sleep.** The TTL is checked against both the monotonic
+  and the wall clock: the monotonic clock stops while the machine is suspended,
+  the wall clock can be set back, and the session ends when either says so.
+  After a wake, the first request ends the agent at once; with no request, a
+  background check ends it within 30 seconds.
+- **WSL2 sees the host's sleep late.** The Linux guest's wall clock may not
+  advance across a Windows host sleep until WSL resyncs it, so an unlock
+  session there can outlive a suspend by up to the time it was asleep. Run
+  `patman lock` before suspending, or use short `--minutes`.
 
 ## Verifying it
 
@@ -224,15 +233,14 @@ settings** → a `request` service is refused without approval, runs with the
 passphrase, refuses a wrong one, and refuses a raw socket client → a `session`
 service still runs unattended → lock → refused again, socket cleaned up.
 
-Expiry across sleep, by hand. The TTL is checked against both the monotonic
-and the wall clock, because the monotonic clock stops while the machine is
-suspended:
+Expiry across sleep, by hand (not under WSL2, see the limitation above):
 
 ```
 patman unlock --minutes 1
 pmset sleepnow             # macOS; on Linux: systemctl suspend
 # wait two minutes or more, then wake the machine
-patman status              # sealed, locked — the session did not survive sleep
+patman status              # sealed, locked — the session expired (the agent exits)
+patman status              # sealed, locked — run: patman unlock
 ```
 
 Touch ID, by hand on macOS:

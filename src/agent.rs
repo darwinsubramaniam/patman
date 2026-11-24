@@ -331,6 +331,42 @@ impl Deadline {
     }
 }
 
+/// Sleep in steps of at most `poll` until `deadline` has passed on either clock.
+///
+/// The sleep and the clock are parameters so the suspend case can be tested:
+/// a real suspend pauses `sleep` and the monotonic clock but not the wall clock.
+fn sleep_until_expired(
+    deadline: &Deadline,
+    poll: Duration,
+    mut sleep: impl FnMut(Duration),
+    mut now: impl FnMut() -> (Instant, SystemTime),
+) {
+    loop {
+        let (mono, wall) = now();
+        let left = deadline.remaining_at(mono, wall);
+        if left.is_zero() {
+            return;
+        }
+        sleep(left.min(poll));
+    }
+}
+
+/// End the session: the socket goes first, so no new client can connect to a
+/// process that is about to vanish, then the process (and the key with it).
+fn shut_down(sock: &std::path::Path) -> ! {
+    let _ = std::fs::remove_file(sock);
+    std::process::exit(0);
+}
+
+const EXPIRED: &str = "the unlock session has expired — run `patman unlock` in a terminal window";
+
+/// What the accept loop should do once a request has been handled.
+#[derive(Debug, PartialEq, Eq)]
+enum After {
+    KeepServing,
+    ShutDown,
+}
+
 struct Started {
     listener: UnixListener,
     key: Arc<Key>,
@@ -370,11 +406,10 @@ fn start(ttl_secs: u64) -> Result<Started> {
     {
         let path = path.clone();
         std::thread::spawn(move || {
-            while !deadline.expired() {
-                std::thread::sleep(deadline.remaining().min(HARD_STOP_POLL));
-            }
-            let _ = std::fs::remove_file(&path);
-            std::process::exit(0);
+            sleep_until_expired(&deadline, HARD_STOP_POLL, std::thread::sleep, || {
+                (Instant::now(), SystemTime::now())
+            });
+            shut_down(&path);
         });
     }
 
@@ -399,18 +434,20 @@ fn accept_loop(started: Started) -> Result<()> {
         let key = Arc::clone(&key);
         let path = path.clone();
         std::thread::spawn(move || {
-            if let Err(e) = handle(conn, &key, deadline, &path) {
+            match handle(conn, &key, deadline) {
+                Ok(After::ShutDown) => shut_down(&path),
+                Ok(After::KeepServing) => {}
                 // Nowhere to report to: stdout and stderr are /dev/null by
                 // construction, and the client has gone. Swallow deliberately
                 // rather than risk a panic taking the whole agent down.
-                let _ = e;
+                Err(_) => {}
             }
         });
     }
     Ok(())
 }
 
-fn handle(conn: UnixStream, key: &Key, deadline: Deadline, sock: &std::path::Path) -> Result<()> {
+fn handle(conn: UnixStream, key: &Key, deadline: Deadline) -> Result<After> {
     let out = Arc::new(Mutex::new(conn.try_clone().ctx("cloning the connection")?));
     let mut reader = BufReader::new(conn);
 
@@ -421,14 +458,26 @@ fn handle(conn: UnixStream, key: &Key, deadline: Deadline, sock: &std::path::Pat
 
     let req: Request = match serde_json::from_str(line.trim()) {
         Ok(r) => r,
-        Err(e) => return fail(&out, &format!("malformed request: {e}")),
+        Err(e) => {
+            fail(&out, &format!("malformed request: {e}"))?;
+            return Ok(After::KeepServing);
+        }
     };
 
+    // An expired session ends on first contact rather than waiting for the
+    // hard-stop thread's next poll: after a suspend that can be up to
+    // HARD_STOP_POLL away, with the key still in memory. The reply is
+    // best-effort; the shutdown is not.
     if deadline.expired() {
-        return fail(
-            &out,
-            "the unlock session has expired — run `patman unlock` in a terminal window",
-        );
+        let _ = match req {
+            Request::Status => reply(
+                &out,
+                "sealed, locked — the unlock session expired; run: patman unlock",
+            )
+            .and_then(|()| exit(&out, 0)),
+            _ => fail(&out, EXPIRED),
+        };
+        return Ok(After::ShutDown);
     }
 
     match req {
@@ -438,35 +487,57 @@ fn handle(conn: UnixStream, key: &Key, deadline: Deadline, sock: &std::path::Pat
                 &out,
                 &format!("unlocked, {}m{}s remaining", left / 60, left % 60),
             )?;
-            exit(&out, 0)
+            exit(&out, 0)?;
+            Ok(After::KeepServing)
         }
         Request::Lock => {
-            reply(&out, "locked")?;
-            exit(&out, 0)?;
-            let _ = std::fs::remove_file(sock);
-            std::process::exit(0);
+            let _ = reply(&out, "locked").and_then(|()| exit(&out, 0));
+            Ok(After::ShutDown)
         }
         Request::Curl {
             service,
             auth,
             args,
             approval,
-        } => match run_curl(&out, key, &service, auth, &args, approval.as_deref()) {
-            Ok(code) => exit(&out, code),
-            Err(e) => fail(&out, &e.0),
-        },
+        } => {
+            match run_curl(
+                &out,
+                key,
+                deadline,
+                &service,
+                auth,
+                &args,
+                approval.as_deref(),
+            ) {
+                Ok(code) => exit(&out, code)?,
+                Err(e) => fail(&out, &e.0)?,
+            }
+            Ok(After::KeepServing)
+        }
         Request::Exec {
             service,
             args,
             approval,
-        } => match run_exec(&out, key, &service, &args, approval.as_deref()) {
-            Ok(code) => exit(&out, code),
-            Err(e) => fail(&out, &e.0),
-        },
+        } => {
+            match run_exec(&out, key, deadline, &service, &args, approval.as_deref()) {
+                Ok(code) => exit(&out, code)?,
+                Err(e) => fail(&out, &e.0)?,
+            }
+            Ok(After::KeepServing)
+        }
     }
 }
 
 type Out = Arc<Mutex<UnixStream>>;
+
+/// An approval prompt can stay open for a long time — across a suspend, say —
+/// so the session is checked again once the human has answered it.
+fn still_open(deadline: Deadline) -> Result<()> {
+    if deadline.expired() {
+        return bail(EXPIRED);
+    }
+    Ok(())
+}
 
 fn frame(out: &Out, kind: u8, payload: &[u8]) -> Result<()> {
     let mut guard = out
@@ -496,6 +567,7 @@ fn exit(out: &Out, code: i32) -> Result<()> {
 fn run_curl(
     out: &Out,
     key: &Key,
+    deadline: Deadline,
     service: &str,
     auth: Auth,
     args: &[String],
@@ -513,6 +585,7 @@ fn run_curl(
     }
     if plan.approval == Approval::Request {
         approve::approve(&approve::describe_curl(service, args), approval)?;
+        still_open(deadline)?;
     }
 
     let secret = token::read(service, Some(key))?;
@@ -536,6 +609,7 @@ fn run_curl(
 fn run_exec(
     out: &Out,
     key: &Key,
+    deadline: Deadline,
     service: &str,
     args: &[String],
     approval: Option<&str>,
@@ -551,6 +625,7 @@ fn run_exec(
     usage::authorize_exec(service, &plan, true)?;
     if plan.approval == Approval::Request {
         approve::approve(&approve::describe_exec(service, args), approval)?;
+        still_open(deadline)?;
     }
 
     let secret = token::read(service, Some(key))?;
@@ -619,6 +694,114 @@ mod tests {
             mono: mono + TTL,
             wall: wall + TTL,
         }
+    }
+
+    #[test]
+    fn the_hard_stop_ends_after_a_suspend_without_waiting_out_the_ttl() {
+        // Simulated suspend on the first nap: the monotonic clock moves only by
+        // the nap, the wall clock by eight hours.
+        let (m0, w0) = (Instant::now(), SystemTime::now());
+        let d = deadline_from(m0, w0);
+        let poll = Duration::from_secs(30);
+        let clocks = std::cell::Cell::new((m0, w0));
+        let naps = std::cell::RefCell::new(Vec::new());
+        sleep_until_expired(
+            &d,
+            poll,
+            |nap| {
+                naps.borrow_mut().push(nap);
+                let (m, w) = clocks.get();
+                let slept = if naps.borrow().len() == 1 {
+                    Duration::from_secs(8 * 3600)
+                } else {
+                    nap
+                };
+                clocks.set((m + nap, w + slept));
+            },
+            || clocks.get(),
+        );
+        let naps = naps.into_inner();
+        assert_eq!(
+            naps,
+            vec![poll],
+            "one capped nap, then the wall clock ends it"
+        );
+    }
+
+    #[test]
+    fn the_hard_stop_never_naps_past_the_poll_or_the_deadline() {
+        let (m0, w0) = (Instant::now(), SystemTime::now());
+        let d = Deadline {
+            mono: m0 + Duration::from_secs(75),
+            wall: w0 + Duration::from_secs(75),
+        };
+        let clocks = std::cell::Cell::new((m0, w0));
+        let mut naps = Vec::new();
+        sleep_until_expired(
+            &d,
+            Duration::from_secs(30),
+            |nap| {
+                naps.push(nap);
+                let (m, w) = clocks.get();
+                clocks.set((m + nap, w + nap));
+            },
+            || clocks.get(),
+        );
+        let secs: Vec<u64> = naps.iter().map(Duration::as_secs).collect();
+        assert_eq!(secs, vec![30, 30, 15]);
+    }
+
+    fn test_key() -> Key {
+        Key::from_hex(&"ab".repeat(32)).unwrap()
+    }
+
+    /// Run `handle` on one end of a socket pair and collect what the client sees.
+    fn exchange(req: &Request, deadline: Deadline) -> (After, Vec<(u8, Vec<u8>)>) {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let mut line = serde_json::to_string(req).unwrap();
+        line.push('\n');
+        client.write_all(line.as_bytes()).unwrap();
+        let after = handle(server, &test_key(), deadline).unwrap();
+        let mut frames = Vec::new();
+        while let Ok(Some(f)) = read_frame(&mut client) {
+            frames.push(f);
+        }
+        (after, frames)
+    }
+
+    fn expired() -> Deadline {
+        Deadline {
+            mono: Instant::now(),
+            wall: SystemTime::now() - Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn an_expired_session_refuses_a_request_and_shuts_down() {
+        let req = Request::Exec {
+            service: "svc".into(),
+            args: vec!["true".into()],
+            approval: None,
+        };
+        let (after, frames) = exchange(&req, expired());
+        assert_eq!(after, After::ShutDown);
+        assert_eq!(frames, vec![(F_ERROR, EXPIRED.as_bytes().to_vec())]);
+    }
+
+    #[test]
+    fn status_on_an_expired_session_reports_locked_and_shuts_down() {
+        let (after, frames) = exchange(&Request::Status, expired());
+        assert_eq!(after, After::ShutDown);
+        assert!(String::from_utf8_lossy(&frames[0].1).starts_with("sealed, locked"));
+        assert_eq!(frames[1], (F_EXIT, 0i32.to_be_bytes().to_vec()));
+    }
+
+    #[test]
+    fn status_on_a_live_session_keeps_serving() {
+        let d = Deadline::after(TTL);
+        let (after, frames) = exchange(&Request::Status, d);
+        assert_eq!(after, After::KeepServing);
+        assert!(String::from_utf8_lossy(&frames[0].1).starts_with("unlocked, "));
     }
 
     #[test]
